@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "拖延记录",
+    "slug": "procrastination-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "bundleIdentifier": "com.example.procrastination",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.example.procrastination",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2563EB"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许访问相册以选择头像图片",
+          "cameraPermission": "允许访问相机以拍摄头像图片"
+        }
+      ],
+      "@react-native-community/datetimepicker"
+    ],
+    "scheme": "procrastination"
+  }
+}
