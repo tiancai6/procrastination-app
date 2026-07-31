@@ -8,14 +8,20 @@
     "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "com.example.procrastination",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.example.procrastination",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2563EB"
-      }
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -29,6 +35,12 @@
       ],
       "@react-native-community/datetimepicker"
     ],
-    "scheme": "procrastination"
+    "scheme": "procrastination",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7c582744-933c-4b84-b7bd-4632f0685461"
+      }
+    }
   }
 }
