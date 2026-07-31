@@ -34,14 +34,24 @@ jobs:
       - name: 归档（关闭代码签名，生成未签名 xcarchive）
         run: |
           cd ios
-          WS=$(ls *.xcworkspace | head -n1)
-          SCHEME=$(xcodebuild -list -workspace "$WS" 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{print $1;exit}')
-          echo "Workspace: $WS  Scheme: $SCHEME"
-          xcodebuild -workspace "$WS" \
-            -scheme "$SCHEME" \
-            -configuration Release -sdk iphoneos \
-            -archivePath build/Runner.xcarchive \
-            archive CODE_SIGNING_ALLOWED=NO
+          WS=$(ls -1 *.xcworkspace | head -n1)
+          PROJ=$(ls -1 *.xcodeproj | head -n1)
+          echo "📦 Workspace: $WS"
+          echo "📦 Project: $PROJ"
+          echo "📋 Project targets:"
+          xcodebuild -list -project "$PROJ" 2>&1 || true
+          # 取主 App target（排除 Pods / 测试 target）；target 无需 shared 即可被 -list 列出
+          APP_TARGET=$(xcodebuild -list -project "$PROJ" 2>/dev/null \
+            | awk '/Targets:/{f=1;next} /Build Configurations:/{f=0} f&&NF{print $1}' \
+            | grep -v -iE 'Pods|test|Tests' | head -n1)
+          echo "▶️ App target: $APP_TARGET"
+          if [ -z "$APP_TARGET" ]; then
+            echo "❌ 未找到主 App target"
+            exit 1
+          fi
+          xcodebuild -workspace "$WS" -target "$APP_TARGET" -configuration Release -sdk iphoneos \
+            -archivePath build/Runner.xcarchive archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
       - name: 提取未签名 IPA（直接 zip .app，跳过 exportArchive）
         run: |
