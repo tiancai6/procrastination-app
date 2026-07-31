@@ -1,0 +1,58 @@
+name: Build Unsigned IPA (Expo)
+
+# 触发：推送到 main 分支，或手动在 Actions 页面点 Run workflow
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest   # GitHub 公共仓库：macOS 时长免费、无限
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装 JS 依赖（自动读取项目 .npmrc 的 legacy-peer-deps）
+        run: npm install
+
+      - name: Expo prebuild 生成 iOS 原生工程
+        # CI=true 关闭交互；--no-install 不重复装 npm；--clean 先清旧的 ios/ 目录
+        run: CI=true npx expo prebuild --platform ios --no-install --clean
+
+      - name: 安装 iOS 原生依赖 (CocoaPods)
+        run: |
+          cd ios
+          pod install --repo-update
+          cd ..
+
+      - name: 归档（关闭代码签名，生成未签名 xcarchive）
+        run: |
+          cd ios
+          WS=$(ls *.xcworkspace | head -n1)
+          SCHEME=$(xcodebuild -list -workspace "$WS" 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{print $1;exit}')
+          echo "Workspace: $WS  Scheme: $SCHEME"
+          xcodebuild -workspace "$WS" \
+            -scheme "$SCHEME" \
+            -configuration Release -sdk iphoneos \
+            -archivePath build/Runner.xcarchive \
+            archive CODE_SIGNING_ALLOWED=NO
+
+      - name: 提取未签名 IPA（直接 zip .app，跳过 exportArchive）
+        run: |
+          cd ios
+          mkdir -p Payload
+          cp -r "build/Runner.xcarchive/Products/Applications/"*.app Payload/
+          zip -r ../unsigned.ipa Payload
+          rm -rf Payload
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: unsigned.ipa
