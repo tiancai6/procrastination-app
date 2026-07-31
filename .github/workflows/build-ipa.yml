@@ -34,32 +34,45 @@ jobs:
       - name: 归档（关闭代码签名，生成未签名 xcarchive）
         run: |
           cd ios
-          WS=$(ls -1 *.xcworkspace | head -n1)
-          PROJ=$(ls -1 *.xcodeproj | head -n1)
+          # 注意：.xcworkspace / .xcodeproj 都是"目录"，必须用 ls -d 取目录名本身
+          WS=$(ls -d *.xcworkspace | head -n1)
+          PROJ=$(ls -d *.xcodeproj | head -n1)
+          NAME="${PROJ%.xcodeproj}"
           echo "📦 Workspace: $WS"
-          echo "📦 Project: $PROJ"
-          echo "📋 Project targets:"
-          xcodebuild -list -project "$PROJ" 2>&1 || true
-          # 取主 App target（排除 Pods / 测试 target）；target 无需 shared 即可被 -list 列出
-          APP_TARGET=$(xcodebuild -list -project "$PROJ" 2>/dev/null \
-            | awk '/Targets:/{f=1;next} /Build Configurations:/{f=0} f&&NF{print $1}' \
-            | grep -v -iE 'Pods|test|Tests' | head -n1)
-          echo "▶️ App target: $APP_TARGET"
-          if [ -z "$APP_TARGET" ]; then
-            echo "❌ 未找到主 App target"
+          echo "📦 Project:   $PROJ"
+          echo "📦 Name:      $NAME"
+          echo "📋 Workspace schemes:"
+          xcodebuild -list -workspace "$WS" 2>&1 || true
+          # 优先用与工程同名的 scheme（Expo prebuild 生成的就是它）
+          SCHEMES=$(xcodebuild -list -workspace "$WS" 2>/dev/null \
+            | awk '/Schemes:/{f=1;next} f&&NF{print $1}')
+          if echo "$SCHEMES" | grep -qx "$NAME"; then
+            SCHEME="$NAME"
+          else
+            SCHEME=$(echo "$SCHEMES" | grep -v -iE '^Pods|Tests?$' | head -n1)
+          fi
+          echo "▶️ Scheme: $SCHEME"
+          if [ -z "$SCHEME" ]; then
+            echo "❌ 未找到可用 scheme"
             exit 1
           fi
-          xcodebuild -workspace "$WS" -target "$APP_TARGET" -configuration Release -sdk iphoneos \
-            -archivePath build/Runner.xcarchive archive \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/App.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER=""
 
       - name: 提取未签名 IPA（直接 zip .app，跳过 exportArchive）
         run: |
           cd ios
+          echo "📋 归档产物："
+          ls -R build/App.xcarchive/Products/Applications || true
           mkdir -p Payload
-          cp -r "build/Runner.xcarchive/Products/Applications/"*.app Payload/
-          zip -r ../unsigned.ipa Payload
+          cp -r "build/App.xcarchive/Products/Applications/"*.app Payload/
+          zip -qr ../unsigned.ipa Payload
           rm -rf Payload
+          echo "✅ 已生成 unsigned.ipa"
+          ls -lh ../unsigned.ipa
 
       - name: 上传 IPA 产物
         uses: actions/upload-artifact@v4
