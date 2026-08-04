@@ -3,13 +3,14 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
-import PortraitPage from './PortraitPage';
+import TimerStatsPanel from '../components/TimerStatsPanel';
 import LedgerStatsPanel from '../components/LedgerStatsPanel';
+import MealStatsPanel from '../components/MealStatsPanel';
 
-type Segment = 'procrastination' | 'ledger';
+type Segment = 'focus' | 'ledger' | 'meal';
 
 const StatsCenterPage: React.FC = () => {
-  const [segment, setSegment] = useState<Segment>('procrastination');
+  const [segment, setSegment] = useState<Segment>('focus');
 
   return (
     <View style={styles.container}>
@@ -17,16 +18,16 @@ const StatsCenterPage: React.FC = () => {
         <Text style={styles.title}>统计中心</Text>
         <View style={styles.segment}>
           <TouchableOpacity
-            style={[styles.segmentBtn, segment === 'procrastination' && styles.segmentBtnActive]}
-            onPress={() => setSegment('procrastination')}
+            style={[styles.segmentBtn, segment === 'focus' && styles.segmentBtnActive]}
+            onPress={() => setSegment('focus')}
           >
             <Ionicons
               name="time-outline"
               size={15}
-              color={segment === 'procrastination' ? '#fff' : COLORS.textLight}
+              color={segment === 'focus' ? '#fff' : COLORS.textLight}
             />
-            <Text style={[styles.segmentText, segment === 'procrastination' && styles.segmentTextActive]}>
-              拖延
+            <Text style={[styles.segmentText, segment === 'focus' && styles.segmentTextActive]}>
+              专注
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -40,14 +41,27 @@ const StatsCenterPage: React.FC = () => {
             />
             <Text style={[styles.segmentText, segment === 'ledger' && styles.segmentTextActive]}>消费</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.segmentBtn, segment === 'meal' && styles.segmentBtnActive]}
+            onPress={() => setSegment('meal')}
+          >
+            <Ionicons
+              name="restaurant-outline"
+              size={15}
+              color={segment === 'meal' ? '#fff' : COLORS.textLight}
+            />
+            <Text style={[styles.segmentText, segment === 'meal' && styles.segmentTextActive]}>三餐</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
       <View style={styles.body}>
-        {segment === 'procrastination' ? (
-          <PortraitPage embedded />
-        ) : (
+        {segment === 'focus' ? (
+          <TimerStatsPanel />
+        ) : segment === 'ledger' ? (
           <LedgerStatsPanel />
+        ) : (
+          <MealStatsPanel />
         )}
       </View>
     </View>

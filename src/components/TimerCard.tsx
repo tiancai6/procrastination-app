@@ -1,81 +1,100 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, Modal, TextInput } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ImageBackground, Keyboard, Dimensions, ScrollView } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { useTimerStore } from '../store/timerStore';
-import { useRecordsStore } from '../store/recordsStore';
-import { COLORS, CONFIG, REASONS, TASK_TYPES } from '../constants/reasons';
+import { useSessionStore } from '../store/sessionStore';
+import { COLORS, FOCUS_CATEGORIES } from '../constants/reasons';
 import { formatDuration } from '../utils/analytics';
-import { generateId, saveProfileImage, getProfileImage } from '../utils/storage';
-import { ProcrastinationRecord } from '../types';
-
-const COMMON_REASONS = ['焦虑逃避', '太累了', '任务太大', '刷社交媒体', '刷视频', '被通知打断'];
-const DEFAULT_IMAGE_URL = 'https://picsum.photos/seed/procrastination/400/400';
+import { generateId, saveFocusBackground, getFocusBackground, clearFocusBackground } from '../utils/storage';
+import { TimerCategory } from '../types';
 
 type RootStackParamList = {
   home: undefined;
-  statistics: undefined;
-  portrait: undefined;
+  statscenter: undefined;
   plan: undefined;
   settings: undefined;
 };
 
 const TimerCard: React.FC = () => {
   const navigation = useNavigation<{ navigate: (screen: keyof RootStackParamList) => void }>();
-  const { isRunning, startTimer, stopTimer, updateDuration, selectedReason, selectedTaskType, selectedNote } = useTimerStore();
-  const { stats, addRecord } = useRecordsStore();
+  const { isRunning, startTimer, stopTimer, updateDuration } = useTimerStore();
+  const { stats, addSession } = useSessionStore();
   const [displayDuration, setDisplayDuration] = useState(0);
-  const [showReasonModal, setShowReasonModal] = useState(false);
-  const [showQuickStartModal, setShowQuickStartModal] = useState(false);
-  const [selectedReasonItem, setSelectedReasonItem] = useState('');
-  const [selectedTaskTypeItem, setSelectedTaskTypeItem] = useState('other');
-  const [note, setNote] = useState('');
-  const [profileImage, setProfileImage] = useState<string>(DEFAULT_IMAGE_URL);
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<TimerCategory>('work');
+  const [what, setWhat] = useState('');
+  const [bgUri, setBgUri] = useState<string | null>(null);
   const durationRef = useRef(0);
 
   useEffect(() => {
     durationRef.current = displayDuration;
   }, [displayDuration]);
 
+  // 挂载时读取已保存的卡片背景图
   useEffect(() => {
-    loadProfileImage();
+    (async () => {
+      const uri = await getFocusBackground();
+      if (uri) setBgUri(uri);
+    })();
   }, []);
 
-  const loadProfileImage = async () => {
-    const image = await getProfileImage();
-    if (image) {
-      setProfileImage(image);
+  // 监听键盘高度：弹窗内输入框（备注）被键盘遮挡时，把整张弹窗抬到键盘上方
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const screenHeight = Dimensions.get('window').height;
+  useEffect(() => {
+    const onShow = (e: { endCoordinates: { height: number } }) => setKeyboardHeight(e.endCoordinates.height);
+    const onHide = () => setKeyboardHeight(0);
+    const subShow = Keyboard.addListener('keyboardDidShow', onShow);
+    const subHide = Keyboard.addListener('keyboardDidHide', onHide);
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
+  // 从相册选图：先压缩/缩放（卡片仅约 200pt 高，缩到宽 1000 足够且看不出差别），
+  // 既避免原图（尤其 HEIC/大图）把备份撑得过大，也统一转成 JPEG 便于跨设备恢复，
+  // 再复制到 App 沙盒持久目录（镜像头像图模式）
+  const pickBackground = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: 'images' as any,
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets && result.assets[0].uri) {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        result.assets[0].uri,
+        [{ resize: { width: 1000 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      const sourceUri = manipulated.uri || result.assets[0].uri;
+      const fileName = `focus_bg_${Date.now()}.jpg`;
+      const destUri = `${FileSystem.documentDirectory}${fileName}`;
+      await FileSystem.copyAsync({ from: sourceUri, to: destUri });
+      setBgUri(destUri);
+      await saveFocusBackground(destUri);
     }
   };
 
-  const pickImage = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: 'images' as any,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets && result.assets[0].uri) {
-        const sourceUri = result.assets[0].uri;
-        // 复制到 App 持久目录，避免重装/清理缓存后失效
-        const ext = (sourceUri.split('.').pop() || 'jpg').toLowerCase();
-        const fileName = `profile_${Date.now()}.${ext}`;
-        const destUri = `${FileSystem.documentDirectory}${fileName}`;
-        await FileSystem.copyAsync({ from: sourceUri, to: destUri });
-        setProfileImage(destUri);
-        await saveProfileImage(destUri);
-      }
-    } catch (error) {
-      console.error('Image picker error:', error);
-      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permissionResult.granted) {
-        alert('需要相册权限才能选择图片');
-      }
-    }
+  // 长按清除背景图，恢复默认蓝色
+  const clearBackground = () => {
+    Alert.alert('清除背景图', '确定恢复为默认蓝色背景吗？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清除',
+        style: 'destructive',
+        onPress: async () => {
+          setBgUri(null);
+          await clearFocusBackground();
+        },
+      },
+    ]);
   };
 
   useEffect(() => {
@@ -93,75 +112,69 @@ const TimerCard: React.FC = () => {
   }, [isRunning]);
 
   const handleStart = () => {
-    setShowReasonModal(true);
-  };
-
-  const handleQuickStart = () => {
-    setShowQuickStartModal(true);
-  };
-
-  const quickStartWithReason = (reason: string) => {
-    startTimer(reason, 'other', '');
     setDisplayDuration(0);
-    setShowQuickStartModal(false);
+    startTimer();
   };
 
-  const confirmStart = () => {
-    const reason = selectedReasonItem || '其他';
-    startTimer(reason, selectedTaskTypeItem as 'work' | 'life' | 'entertainment' | 'other', note);
-    setDisplayDuration(0);
-    setShowReasonModal(false);
-    setSelectedReasonItem('');
-    setSelectedTaskTypeItem('other');
-    setNote('');
+  const handleStop = () => {
+    setShowEndModal(true);
   };
 
-  const handleStop = async () => {
-    const record: ProcrastinationRecord = {
+  const confirmEnd = async () => {
+    const duration = durationRef.current;
+    const session = {
       id: generateId(),
-      startTime: Date.now() - displayDuration * 60000,
+      startTime: Date.now() - duration * 60000,
       endTime: Date.now(),
-      duration: displayDuration,
-      reason: selectedReason || '其他',
-      taskType: selectedTaskType || 'other',
-      note: selectedNote,
+      duration,
+      category: selectedCategory,
+      what: what.trim(),
       createdAt: Date.now(),
     };
-    await addRecord(record);
+    await addSession(session);
     stopTimer();
     setDisplayDuration(0);
+    setShowEndModal(false);
+    setWhat('');
+    setSelectedCategory('work');
   };
 
-  const remainingTime = Math.max(0, CONFIG.dailyLimit - stats.todayDuration);
-  const progress = Math.min((stats.todayDuration / CONFIG.dailyLimit) * 100, 100);
+  const cancelEnd = () => {
+    stopTimer();
+    setDisplayDuration(0);
+    setShowEndModal(false);
+    setWhat('');
+    setSelectedCategory('work');
+  };
+
+  const shownDuration = isRunning ? displayDuration : stats.todayDuration;
+  const hint = isRunning
+    ? `计时中 · 已 ${formatDuration(displayDuration)}`
+    : `今日已专注 ${formatDuration(stats.todayDuration)}`;
 
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <TouchableOpacity onPress={pickImage} activeOpacity={0.9}>
-          <Image
-            source={typeof profileImage === 'number' ? profileImage : { uri: profileImage }}
-            style={styles.image}
-            resizeMode="cover"
-          />
-        </TouchableOpacity>
+        {bgUri ? (
+          <ImageBackground source={{ uri: bgUri }} style={styles.cardImage} imageStyle={styles.cardImageInner}>
+            <View style={styles.scrim} />
+          </ImageBackground>
+        ) : null}
         <View style={styles.overlay}>
-          <Text style={styles.todayLabel}>今日拖延</Text>
-          <Text style={styles.duration}>{formatDuration(isRunning ? displayDuration : stats.todayDuration)}</Text>
+          <Text style={styles.todayLabel}>{isRunning ? '专注计时中' : '今日专注'}</Text>
+          <Text style={styles.duration}>{formatDuration(shownDuration)}</Text>
+          <Text style={styles.hint}>{hint}</Text>
         </View>
+        <TouchableOpacity
+          style={styles.bgButton}
+          onPress={pickBackground}
+          onLongPress={clearBackground}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="images-outline" size={20} color="#fff" />
+        </TouchableOpacity>
       </View>
-      
-      <View style={styles.infoRow}>
-        <Text style={styles.infoText}>上限 {CONFIG.dailyLimit}m</Text>
-        <Text style={styles.infoText}>还剩 {remainingTime} 分钟</Text>
-      </View>
-      
-      <View style={styles.progressBar}>
-        <View 
-          style={[styles.progressFill, { width: `${progress}%` }]}
-        />
-      </View>
-      
+
       <View style={styles.buttonsRow}>
         <TouchableOpacity
           style={[styles.button, !isRunning ? styles.startButton : styles.buttonDisabled]}
@@ -170,7 +183,7 @@ const TimerCard: React.FC = () => {
           activeOpacity={0.85}
         >
           <Ionicons name="play-circle-outline" size={20} color="#fff" />
-          <Text style={styles.buttonText}>{isRunning ? '计时中' : '开始拖延'}</Text>
+          <Text style={styles.buttonText}>{isRunning ? '计时中' : '开始计时'}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.button, isRunning ? styles.stopButton : styles.buttonDisabled]}
@@ -179,138 +192,89 @@ const TimerCard: React.FC = () => {
           activeOpacity={0.85}
         >
           <Ionicons name="stop-circle-outline" size={20} color="#fff" />
-          <Text style={styles.buttonText}>结束拖延</Text>
+          <Text style={styles.buttonText}>结束计时</Text>
         </TouchableOpacity>
       </View>
 
       <View style={styles.quickButtons}>
         <TouchableOpacity style={styles.quickButton} onPress={() => navigation.navigate('plan')} activeOpacity={0.85}>
-          <Ionicons name="trophy-outline" size={16} color={COLORS.primary} />
+          <Ionicons name="checkbox-outline" size={16} color={COLORS.primary} />
           <Text style={styles.quickButtonText}>我的规划</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.quickButton} onPress={handleQuickStart} activeOpacity={0.85}>
-          <Ionicons name="flash-outline" size={16} color={COLORS.primary} />
-          <Text style={styles.quickButtonText}>快速启动</Text>
+        <TouchableOpacity style={styles.quickButton} onPress={() => navigation.navigate('statscenter')} activeOpacity={0.85}>
+          <Ionicons name="stats-chart-outline" size={16} color={COLORS.primary} />
+          <Text style={styles.quickButtonText}>专注统计</Text>
         </TouchableOpacity>
       </View>
 
       <Modal
-        visible={showReasonModal}
+        visible={showEndModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowReasonModal(false)}
+        onRequestClose={cancelEnd}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>这次拖延了什么？</Text>
-            
-            <View style={styles.inputSection}>
-              <Text style={styles.sectionLabel}>分类</Text>
-              <View style={styles.reasonTags}>
-                {REASONS.map((reason) => (
-                  <TouchableOpacity
-                    key={`timer-reason-${reason}`}
-                    style={[
-                      styles.reasonTag,
-                      selectedReasonItem === reason && styles.reasonTagSelected,
-                    ]}
-                    onPress={() => setSelectedReasonItem(reason)}
-                  >
-                    <Text style={[
-                      styles.reasonTagText,
-                      selectedReasonItem === reason && styles.reasonTagTextSelected,
-                    ]}>
-                      {reason}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.inputSection}>
-              <Text style={styles.sectionLabel}>类型标签（可选）</Text>
-              <View style={styles.typeTags}>
-                {TASK_TYPES.map((type) => (
-                  <TouchableOpacity
-                    key={`timer-type-${type.value}`}
-                    style={[
-                      styles.typeTag,
-                      selectedTaskTypeItem === type.value && styles.typeTagSelected,
-                    ]}
-                    onPress={() => setSelectedTaskTypeItem(type.value)}
-                  >
-                    <Text style={[
-                      styles.typeTagText,
-                      selectedTaskTypeItem === type.value && styles.typeTagTextSelected,
-                    ]}>
-                      {type.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.inputSection}>
-              <Text style={styles.sectionLabel}>一句话备注（可选）</Text>
-              <TextInput
-                style={styles.noteInput}
-                placeholder="记录此刻的感受或上下文"
-                placeholderTextColor={COLORS.textLighter}
-                value={note}
-                onChangeText={setNote}
-                multiline
-                maxLength={100}
-              />
-            </View>
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.skipButton}
-                onPress={() => {
-                  confirmStart();
-                }}
-              >
-                <Text style={styles.skipButtonText}>跳过</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.confirmButton, !selectedReasonItem && styles.confirmButtonDisabled]}
-                onPress={confirmStart}
-                disabled={!selectedReasonItem}
-              >
-                <Text style={styles.confirmButtonText}>确认开始</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={showQuickStartModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowQuickStartModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>快速启动</Text>
-            <Text style={styles.modalSubtitle}>选择拖延原因，立即开始计时</Text>
-            <View style={styles.quickStartGrid}>
-              {COMMON_REASONS.map((reason) => (
-                <TouchableOpacity
-                  key={`quick-${reason}`}
-                  style={styles.quickStartButton}
-                  onPress={() => quickStartWithReason(reason)}
-                >
-                  <Text style={styles.quickStartButtonText}>{reason}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={() => setShowQuickStartModal(false)}
+          <View
+            style={[
+              styles.modalContent,
+              keyboardHeight > 0 && {
+                maxHeight: screenHeight - keyboardHeight - 16,
+                marginBottom: keyboardHeight,
+              },
+            ]}
+          >
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.closeButtonText}>取消</Text>
-            </TouchableOpacity>
+              <Text style={styles.modalTitle}>这次专注做了什么？</Text>
+              <Text style={styles.modalSubtitle}>时长 {formatDuration(durationRef.current)}</Text>
+
+              <View style={styles.inputSection}>
+                <Text style={styles.sectionLabel}>分类</Text>
+                <View style={styles.reasonTags}>
+                  {FOCUS_CATEGORIES.map((c) => (
+                    <TouchableOpacity
+                      key={`cat-${c.value}`}
+                      style={[styles.reasonTag, selectedCategory === c.value && styles.reasonTagSelected]}
+                      onPress={() => setSelectedCategory(c.value)}
+                    >
+                      <Text style={[styles.reasonTagText, selectedCategory === c.value && styles.reasonTagTextSelected]}>
+                        {c.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.inputSection}>
+                <Text style={styles.sectionLabel}>记录这段时间的收获 / 内容（可选）</Text>
+                <TextInput
+                  style={styles.noteInput}
+                  placeholder="例如：写完周报、练了胸+三头、读了 30 页书"
+                  placeholderTextColor={COLORS.textLighter}
+                  value={what}
+                  onChangeText={setWhat}
+                  multiline
+                  maxLength={100}
+                />
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={styles.skipButton} onPress={cancelEnd}>
+                  <Text style={styles.skipButtonText}>不保存</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.confirmButton, durationRef.current <= 0 && styles.confirmButtonDisabled]}
+                  onPress={confirmEnd}
+                  disabled={durationRef.current <= 0}
+                >
+                  <Text style={styles.confirmButtonText}>保存记录</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -324,7 +288,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   card: {
-    backgroundColor: COLORS.card,
+    backgroundColor: COLORS.primary,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.secondary,
@@ -337,10 +301,38 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 6,
   },
-  image: {
+  cardImage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
+  },
+  cardImageInner: {
+    borderRadius: 16,
+  },
+  scrim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  bgButton: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
   },
   overlay: {
     position: 'absolute',
@@ -361,27 +353,11 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 2,
   },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 16,
-    paddingHorizontal: 4,
-  },
-  infoText: {
-    fontSize: 14,
-    color: COLORS.textLight,
-  },
-  progressBar: {
-    height: 6,
-    backgroundColor: COLORS.border,
-    borderRadius: 3,
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: COLORS.primary,
-    borderRadius: 3,
+  hint: {
+    color: '#fff',
+    fontSize: 13,
+    opacity: 0.8,
+    marginTop: 6,
   },
   buttonsRow: {
     flexDirection: 'row',
@@ -453,14 +429,25 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
+    maxHeight: '80%',
+    overflow: 'hidden',
+  },
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
     padding: 24,
     paddingBottom: 40,
-    maxHeight: '80%',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: COLORS.text,
+    marginBottom: 6,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: COLORS.textLight,
     marginBottom: 20,
   },
   inputSection: {
@@ -494,31 +481,6 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
   },
   reasonTagTextSelected: {
-    color: '#fff',
-    fontWeight: '500',
-  },
-  typeTags: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  typeTag: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: COLORS.background,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  typeTagSelected: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  typeTagText: {
-    fontSize: 14,
-    color: COLORS.textLight,
-  },
-  typeTagTextSelected: {
     color: '#fff',
     fontWeight: '500',
   },
@@ -573,43 +535,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    marginBottom: 20,
-  },
-  quickStartGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 20,
-  },
-  quickStartButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 14,
-    backgroundColor: COLORS.secondary,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  quickStartButtonText: {
-    fontSize: 14,
-    color: COLORS.primary,
-    fontWeight: '500',
-  },
-  closeButton: {
-    paddingVertical: 16,
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 14,
-  },
-  closeButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.textLight,
   },
 });
 

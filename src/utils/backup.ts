@@ -3,29 +3,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import { emitDataReset } from './appEvents';
-
-const BACKUP_KEYS = [
-  'procrastination_records',
-  'procrastination_stats',
-  'procrastination_task_plans',
-  'procrastination_plans',
-  'procrastination_checkin_records',
-  'procrastination_reward_records',
-  'procrastination_profile_image',
-  'quick_memos',
-  'ledger_entries',
-  'chat_messages',
-  'chat_summary',
-  'chat_meta',
-  'ai_api_key',
-  'ai_model',
-  'ai_insights_cache',
-  'memo_analysis_cache',
-];
+import { ALL_DATA_KEYS } from './keys';
 
 const MEMO_MEDIA_BASE = `${FileSystem.documentDirectory}memos/`;
+// 聊天图片目录（与 chat.ts 中的 CHAT_IMG_DIR 保持一致）
+const CHAT_IMG_DIR = `${FileSystem.documentDirectory}chat_images/`;
 
-const BACKUP_APP_TAG = 'procrastination-app';
+const BACKUP_APP_TAG = 'dailytrace';
 const BACKUP_VERSION = 1;
 
 interface BackupFile {
@@ -34,7 +18,9 @@ interface BackupFile {
   exportedAt: string;
   data: Record<string, string | null>;
   memoMedia?: Record<string, Record<string, string>>;
+  chatImages?: Record<string, string>;
   profileImageFile?: { name: string; base64: string };
+  focusBgFile?: { name: string; base64: string };
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0');
@@ -120,17 +106,88 @@ const restoreProfileImageFile = async (file: { name: string; base64: string }): 
   }
 };
 
+// 收集首页「今日专注」卡片背景图（base64 内联进备份，重装后仍可恢复）
+const collectFocusBgFile = async (uri: string): Promise<{ name: string; base64: string } | null> => {
+  try {
+    if (!uri || !uri.startsWith('file://')) return null;
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) return null;
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const name = uri.split('/').pop() || 'focus_bg.jpg';
+    return { name, base64 };
+  } catch (e) {
+    console.error('collectFocusBgFile failed', e);
+    return null;
+  }
+};
+
+const restoreFocusBgFile = async (file: { name: string; base64: string }): Promise<string | null> => {
+  try {
+    const destUri = `${FileSystem.documentDirectory}${file.name}`;
+    await FileSystem.writeAsStringAsync(destUri, file.base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return destUri;
+  } catch (e) {
+    console.error('restoreFocusBgFile failed', e);
+    return null;
+  }
+};
+
+// 收集聊天图片（chat_images/）为 base64，按文件名内联进备份，重装后仍能显示聊天里的图片
+const collectChatImages = async (): Promise<Record<string, string>> => {
+  const out: Record<string, string> = {};
+  try {
+    const info = await FileSystem.getInfoAsync(CHAT_IMG_DIR);
+    if (!info.exists) return out;
+    const files = await FileSystem.readDirectoryAsync(CHAT_IMG_DIR);
+    for (const f of files) {
+      try {
+        out[f] = await FileSystem.readAsStringAsync(`${CHAT_IMG_DIR}${f}`, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch (e) {
+        console.error('collectChatImages read failed', f, e);
+      }
+    }
+  } catch (e) {
+    console.error('collectChatImages failed', e);
+  }
+  return out;
+};
+
+const restoreChatImages = async (images: Record<string, string>): Promise<void> => {
+  try {
+    const info = await FileSystem.getInfoAsync(CHAT_IMG_DIR);
+    if (!info.exists) await FileSystem.makeDirectoryAsync(CHAT_IMG_DIR, { intermediates: true });
+    for (const name of Object.keys(images)) {
+      await FileSystem.writeAsStringAsync(`${CHAT_IMG_DIR}${name}`, images[name], {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    }
+  } catch (e) {
+    console.error('restoreChatImages failed', e);
+  }
+};
+
 export const exportBackup = async (): Promise<{ recordCount: number; fileName: string; fileSizeKB: number }> => {
-  const entries = await AsyncStorage.multiGet(BACKUP_KEYS);
+  const entries = await AsyncStorage.multiGet(ALL_DATA_KEYS);
   const data: Record<string, string | null> = {};
   entries.forEach(([key, value]) => {
     data[key] = value;
   });
 
   const memoMedia = await collectMemoMedia();
+  const chatImages = await collectChatImages();
   // 头像图片文件单独收集，确保重装后仍可恢复
   const profileUri = data['procrastination_profile_image'];
   const profileImageFile = profileUri ? (await collectProfileImageFile(profileUri)) ?? undefined : undefined;
+
+  // 首页背景图文件单独收集，确保重装后仍可恢复
+  const focusBgUri = data['focus_card_image'];
+  const focusBgFile = focusBgUri ? (await collectFocusBgFile(focusBgUri)) ?? undefined : undefined;
 
   const backup: BackupFile = {
     version: BACKUP_VERSION,
@@ -138,11 +195,13 @@ export const exportBackup = async (): Promise<{ recordCount: number; fileName: s
     exportedAt: new Date().toISOString(),
     data,
     memoMedia,
+    chatImages,
     profileImageFile,
+    focusBgFile,
   };
 
   const now = new Date();
-  const fileName = `拖延记录备份-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+  const fileName = `日迹备份-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
   const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
 
   const jsonStr = JSON.stringify(backup, null, 2);
@@ -162,7 +221,7 @@ export const exportBackup = async (): Promise<{ recordCount: number; fileName: s
   }
 
   return {
-    recordCount: countRecords(data['procrastination_records']),
+    recordCount: countRecords(data['timer_sessions']),
     fileName,
     fileSizeKB,
   };
@@ -201,7 +260,7 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
 
   if (
     !backup ||
-    backup.app !== BACKUP_APP_TAG ||
+    (backup.app !== BACKUP_APP_TAG && backup.app !== 'procrastination-app') ||
     backup.version !== BACKUP_VERSION ||
     typeof backup.data !== 'object' ||
     backup.data === null
@@ -210,7 +269,7 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
   }
 
   const pairs: [string, string][] = [];
-  for (const key of BACKUP_KEYS) {
+  for (const key of ALL_DATA_KEYS) {
     const value = backup.data[key];
     if (typeof value === 'string') {
       pairs.push([key, value]);
@@ -227,6 +286,10 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
     await restoreMemoMedia(JSON.stringify(backup.memoMedia));
   }
 
+  if (backup.chatImages) {
+    await restoreChatImages(backup.chatImages);
+  }
+
   // 通知所有已挂载页面重新拉取，保证导入后首页/统计等同步显示新数据
   emitDataReset();
 
@@ -238,8 +301,16 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
     }
   }
 
+  // 恢复首页背景图文件，并把新路径写回 AsyncStorage
+  if (backup.focusBgFile) {
+    const newUri = await restoreFocusBgFile(backup.focusBgFile);
+    if (newUri) {
+      await AsyncStorage.setItem('focus_card_image', newUri);
+    }
+  }
+
   return {
-    recordCount: countRecords(backup.data['procrastination_records']),
+    recordCount: countRecords(backup.data['timer_sessions']),
     fileSizeKB,
   };
 };

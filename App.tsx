@@ -1,50 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { Alert, View, Text, Modal, TouchableOpacity, Linking, StyleSheet } from 'react-native';
 import HomePage from './src/pages/HomePage';
 import StatsCenterPage from './src/pages/StatsCenterPage';
 import SettingsPage from './src/pages/SettingsPage';
 import PlanListPage from './src/pages/PlanListPage';
-import CheckinPage from './src/pages/CheckinPage';
-import PlanStatsPage from './src/pages/PlanStatsPage';
 import QuickMemoPage from './src/pages/QuickMemoPage';
 import ChatPage from './src/pages/ChatPage';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
 
 const Tab = createBottomTabNavigator();
-const PlanStack = createNativeStackNavigator();
-
-const PlanNavigator: React.FC = () => {
-  return (
-    <PlanStack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: COLORS.primary },
-        headerTintColor: '#fff',
-        headerTitleStyle: { fontWeight: 'bold' },
-      }}
-    >
-      <PlanStack.Screen
-        name="PlanList"
-        component={PlanListPage}
-        options={{ title: '规划奖励' }}
-      />
-      <PlanStack.Screen
-        name="Checkin"
-        component={CheckinPage}
-        options={{ title: '打卡' }}
-      />
-      <PlanStack.Screen
-        name="PlanStats"
-        component={PlanStatsPage}
-        options={{ title: '统计' }}
-      />
-    </PlanStack.Navigator>
-  );
-};
 
 export const App: React.FC = () => {
   const [showReminder, setShowReminder] = useState(false);
@@ -134,10 +102,10 @@ export const App: React.FC = () => {
         />
         <Tab.Screen
           name="plan"
-          component={PlanNavigator}
+          component={PlanListPage}
           options={{
-            title: '奖励',
-            tabBarIcon: ({ color, size }) => <Ionicons name="trophy-outline" color={color} size={size} />,
+            title: '规划',
+            tabBarIcon: ({ color, size }) => <Ionicons name="checkbox-outline" color={color} size={size} />,
           }}
         />
         <Tab.Screen

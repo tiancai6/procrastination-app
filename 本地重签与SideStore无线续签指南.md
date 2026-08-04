@@ -26,10 +26,24 @@
 
 ---
 
-## 第 2 步：Windows 装 Sideloadly
+## 第 2 步：Windows 装 Sideloadly（含前置驱动）
 
-1. 浏览器打开 **sideloadly.io** → 下载 Windows 版安装
-2. 打开 Sideloadly
+> ⚠️ **必须先装 Apple 官网版 iTunes + iCloud，不能用微软商店版**（Sideloadly 官方要求；商店版是沙盒应用，驱动不可用）。
+> 没装驱动 → 插线时手机不会弹「信任此电脑」，Sideloadly 也看不到设备。
+
+1. 装 **iTunes（Apple 官网 64 位版）**：`https://www.apple.com/itunes/download/win64`
+2. 装 **iCloud for Windows（Apple 官网版）**：`https://support.apple.com/zh-cn/icloud`
+3. **重启电脑**
+4. 浏览器打开 **sideloadly.io** → 下载 Windows 版安装
+5. 打开 Sideloadly
+
+### 插线不弹「信任此电脑」的排查顺序
+1. **先解锁手机、停在主屏幕**，再插线（锁屏状态不会弹）
+2. 换 **原装数据线**（充电专用线不传数据）；换**主机后面板 USB 口**，别用前面板/扩展坞
+3. 确认上面 iTunes / iCloud 已装且已重启电脑
+4. `Win+X` → 设备管理器 → 查看「便携设备 → Apple iPhone」或「通用串行总线控制器 → Apple Mobile Device USB Driver」。有黄色感叹号就右键卸载 → 拔线重插，自动重装驱动
+5. 以前误点过「不信任」：iPhone → 设置 → 通用 → 传输或还原 iPhone → 还原 → **还原位置与隐私**（不会删数据），重插即可再次弹窗
+6. `Win+R` → `services.msc` → 找 **Apple Mobile Device Service** → 右键「启动」/「重新启动」
 
 ---
 

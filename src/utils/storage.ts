@@ -1,14 +1,24 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import { ProcrastinationRecord, UserStats, TaskPlan, Plan, CheckinRecord, RewardRecord, QuickMemo, LedgerEntry } from '../types';
+import { TimerSession, FocusStats, TaskPlan, Plan, CheckinRecord, RewardRecord, QuickMemo, LedgerEntry, Reminder, LedgerType, Habit, HabitCheckin } from '../types';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from './ledger';
 import type { AIInsightResult, MemoAnalysisResult } from './ai';
 import type { ChatMessage, ChatMeta } from './chat';
 import { autoBackup } from './autoBackup';
 import { emitDataReset } from './appEvents';
+import { ALL_DATA_KEYS } from './keys';
 
-const RECORDS_KEY = 'procrastination_records';
-const STATS_KEY = 'procrastination_stats';
+// YYYY-MM-DD（本地时区）
+export const toDateStr = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const SESSIONS_KEY = 'timer_sessions';
 const PROFILE_IMAGE_KEY = 'procrastination_profile_image';
+const FOCUS_BG_KEY = 'focus_card_image';
 const TASK_PLANS_KEY = 'procrastination_task_plans';
 const PLANS_KEY = 'procrastination_plans';
 const CHECKIN_RECORDS_KEY = 'procrastination_checkin_records';
@@ -17,6 +27,8 @@ const AI_INSIGHTS_CACHE_KEY = 'ai_insights_cache';
 const AI_API_KEY = 'ai_api_key';
 const AI_MODEL = 'ai_model';
 const DEFAULT_AI_MODEL = 'glm-4-flash';
+const AI_VISION_MODEL = 'ai_vision_model';
+const DEFAULT_VISION_MODEL = 'glm-4v-flash';
 const QUICK_MEMOS_KEY = 'quick_memos';
 const MEMO_ANALYSIS_CACHE_KEY = 'memo_analysis_cache';
 
@@ -29,35 +41,37 @@ export interface AIInsightCache {
   [period: string]: CachedInsight;
 }
 
+// 清除散落在沙盒根目录的图片文件（头像图 profile_*、首页背景图 focus_bg_*）
+// 它们不是子目录，ALL_MEDIA_DIRS 删不掉，需按文件名前缀单独清理，否则会残留成孤儿文件
+const clearOrphanImages = async (): Promise<void> => {
+  try {
+    const base = FileSystem.documentDirectory;
+    if (!base) return;
+    const files = await FileSystem.readDirectoryAsync(base);
+    for (const f of files) {
+      if (f.startsWith('focus_bg_') || f.startsWith('profile_')) {
+        await FileSystem.deleteAsync(`${base}${f}`, { idempotent: true });
+      }
+    }
+  } catch (e) {
+    console.error('clearOrphanImages failed', e);
+  }
+};
+
 export const clearAllData = async (): Promise<void> => {
   try {
-    await AsyncStorage.multiRemove([
-      RECORDS_KEY,
-      STATS_KEY,
-      PROFILE_IMAGE_KEY,
-      TASK_PLANS_KEY,
-      PLANS_KEY,
-      CHECKIN_RECORDS_KEY,
-      REWARD_RECORDS_KEY,
-      AI_INSIGHTS_CACHE_KEY,
-      QUICK_MEMOS_KEY,
-      MEMO_ANALYSIS_CACHE_KEY,
-      AI_API_KEY,
-      AI_MODEL,
-      CHAT_MESSAGES_KEY,
-      CHAT_SUMMARY_KEY,
-      CHAT_META_KEY,
-      LEDGER_KEY,
-      // 注意：last_manual_export_at 不清除，避免清除后立即弹备份提醒
-      // last_auto_backup_at 也不清除，保留上次备份时间便于参考
-    ]);
-    // 随手记媒体文件存于沙盒 documentDirectory/memos/，非 AsyncStorage，需单独删除
-    try {
-      const MEMO_MEDIA_BASE = `${FileSystem.documentDirectory}memos/`;
-      await FileSystem.deleteAsync(MEMO_MEDIA_BASE, { idempotent: true });
-    } catch (e) {
-      console.error('Failed to clear memo media:', e);
+    // 清除全部业务数据（单一可信来源 ALL_DATA_KEYS，确保不漏清）
+    await AsyncStorage.multiRemove(ALL_DATA_KEYS);
+    // 删除沙盒媒体目录（随手记图片、聊天图片等）
+    for (const dir of ALL_MEDIA_DIRS) {
+      try {
+        await FileSystem.deleteAsync(dir, { idempotent: true });
+      } catch (e) {
+        console.error('Failed to clear media dir:', dir, e);
+      }
     }
+    // 删除根目录散落的头像图 / 首页背景图（避免孤儿文件残留）
+    await clearOrphanImages();
     console.log('All data cleared');
   } catch (error) {
     console.error('Failed to clear data:', error);
@@ -67,109 +81,94 @@ export const clearAllData = async (): Promise<void> => {
   }
 };
 
-export const saveRecord = async (record: ProcrastinationRecord): Promise<void> => {
+export const saveTimerSession = async (session: TimerSession): Promise<void> => {
   try {
-    const records = await getRecords();
-    records.push(record);
-    await AsyncStorage.setItem(RECORDS_KEY, JSON.stringify(records));
+    const sessions = await getTimerSessions();
+    sessions.push(session);
+    await AsyncStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
     autoBackup();
   } catch (error) {
-    console.error('Failed to save record:', error);
+    console.error('Failed to save timer session:', error);
   }
 };
 
-export const getRecords = async (): Promise<ProcrastinationRecord[]> => {
+export const getTimerSessions = async (): Promise<TimerSession[]> => {
   try {
-    const data = await AsyncStorage.getItem(RECORDS_KEY);
-    const records = data ? JSON.parse(data) : [];
+    const data = await AsyncStorage.getItem(SESSIONS_KEY);
+    const sessions = data ? JSON.parse(data) : [];
     const seen = new Set<string>();
-    const deduplicated = records.filter((record: ProcrastinationRecord) => {
-      if (seen.has(record.id)) {
-        console.warn(`Duplicate record ID found: ${record.id}`);
+    return sessions.filter((s: TimerSession) => {
+      if (seen.has(s.id)) {
+        console.warn(`Duplicate session ID found: ${s.id}`);
         return false;
       }
-      seen.add(record.id);
+      seen.add(s.id);
       return true;
     });
-    return deduplicated;
   } catch (error) {
-    console.error('Failed to get records:', error);
+    console.error('Failed to get timer sessions:', error);
     return [];
   }
 };
 
-export const getTodayRecords = async (): Promise<ProcrastinationRecord[]> => {
-  const records = await getRecords();
+export const getTodaySessions = async (): Promise<TimerSession[]> => {
+  const sessions = await getTimerSessions();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayTimestamp = today.getTime();
-  
-  return records.filter(record => record.startTime >= todayTimestamp);
+  return sessions.filter((s) => s.startTime >= todayTimestamp);
 };
 
-export const getWeekRecords = async (): Promise<ProcrastinationRecord[]> => {
-  const records = await getRecords();
+export const getWeekSessions = async (): Promise<TimerSession[]> => {
+  const sessions = await getTimerSessions();
   const now = new Date();
   const dayOfWeek = now.getDay() || 7;
   const monday = new Date(now);
   monday.setDate(now.getDate() - dayOfWeek + 1);
   monday.setHours(0, 0, 0, 0);
   const mondayTimestamp = monday.getTime();
-  
-  return records.filter(record => record.startTime >= mondayTimestamp);
+  return sessions.filter((s) => s.startTime >= mondayTimestamp);
 };
 
-export const getMonthRecords = async (): Promise<ProcrastinationRecord[]> => {
-  const records = await getRecords();
+export const getMonthSessions = async (): Promise<TimerSession[]> => {
+  const sessions = await getTimerSessions();
   const now = new Date();
   const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
   const firstDayTimestamp = firstDay.getTime();
-  
-  return records.filter(record => record.startTime >= firstDayTimestamp);
+  return sessions.filter((s) => s.startTime >= firstDayTimestamp);
 };
 
-export const getAllRecords = async (): Promise<ProcrastinationRecord[]> => {
-  return await getRecords();
+export const getAllSessions = async (): Promise<TimerSession[]> => {
+  return await getTimerSessions();
 };
 
-export const updateRecord = async (record: ProcrastinationRecord): Promise<void> => {
+export const updateTimerSession = async (session: TimerSession): Promise<void> => {
   try {
-    const records = await getRecords();
-    const idx = records.findIndex((r) => r.id === record.id);
+    const sessions = await getTimerSessions();
+    const idx = sessions.findIndex((s) => s.id === session.id);
     if (idx !== -1) {
-      records[idx] = record;
-      await AsyncStorage.setItem(RECORDS_KEY, JSON.stringify(records));
+      sessions[idx] = session;
+      await AsyncStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
       autoBackup();
     }
   } catch (error) {
-    console.error('Failed to update record:', error);
+    console.error('Failed to update timer session:', error);
   }
 };
 
-export const deleteRecord = async (id: string): Promise<void> => {
+export const deleteTimerSession = async (id: string): Promise<void> => {
   try {
-    const records = await getRecords();
-    await AsyncStorage.setItem(RECORDS_KEY, JSON.stringify(records.filter((r) => r.id !== id)));
+    const sessions = await getTimerSessions();
+    await AsyncStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions.filter((s) => s.id !== id)));
     autoBackup();
   } catch (error) {
-    console.error('Failed to delete record:', error);
+    console.error('Failed to delete timer session:', error);
   }
 };
 
-export const getStats = async (): Promise<UserStats> => {
+export const getTimerStats = async (): Promise<FocusStats> => {
   try {
-    const records = await getRecords();
-    await updateStats(records);
-    const data = await AsyncStorage.getItem(STATS_KEY);
-    return data ? JSON.parse(data) : getDefaultStats();
-  } catch (error) {
-    console.error('Failed to get stats:', error);
-    return getDefaultStats();
-  }
-};
-
-export const updateStats = async (records: ProcrastinationRecord[]): Promise<void> => {
-  try {
+    const sessions = await getTimerSessions();
     const now = new Date();
 
     const today = new Date(now);
@@ -185,35 +184,33 @@ export const updateStats = async (records: ProcrastinationRecord[]): Promise<voi
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
     const firstDayTimestamp = firstDay.getTime();
 
-    const todayRecords = records.filter(r => r.startTime >= todayTimestamp);
-    const weekRecords = records.filter(r => r.startTime >= mondayTimestamp);
-    const monthRecords = records.filter(r => r.startTime >= firstDayTimestamp);
+    const todaySessions = sessions.filter((s) => s.startTime >= todayTimestamp);
+    const weekSessions = sessions.filter((s) => s.startTime >= mondayTimestamp);
+    const monthSessions = sessions.filter((s) => s.startTime >= firstDayTimestamp);
 
-    const stats: UserStats = {
-      todayDuration: todayRecords.reduce((sum, r) => sum + r.duration, 0),
-      todayLimit: 45,
-      weekTotal: weekRecords.reduce((sum, r) => sum + r.duration, 0),
-      weekCount: weekRecords.length,
-      avgDuration: weekRecords.length > 0
-        ? Math.round(weekRecords.reduce((sum, r) => sum + r.duration, 0) / weekRecords.length)
+    const stats: FocusStats = {
+      todayDuration: todaySessions.reduce((sum, s) => sum + s.duration, 0),
+      weekTotal: weekSessions.reduce((sum, s) => sum + s.duration, 0),
+      weekCount: weekSessions.length,
+      avgDuration: weekSessions.length > 0
+        ? Math.round(weekSessions.reduce((sum, s) => sum + s.duration, 0) / weekSessions.length)
         : 0,
-      longestDuration: records.length > 0
-        ? Math.max(...records.map(r => r.duration))
+      longestDuration: sessions.length > 0
+        ? Math.max(...sessions.map((s) => s.duration))
         : 0,
-      monthTotal: monthRecords.reduce((sum, r) => sum + r.duration, 0),
-      monthCount: monthRecords.length,
+      monthTotal: monthSessions.reduce((sum, s) => sum + s.duration, 0),
+      monthCount: monthSessions.length,
     };
 
-    await AsyncStorage.setItem(STATS_KEY, JSON.stringify(stats));
-    autoBackup();
+    return stats;
   } catch (error) {
-    console.error('Failed to update stats:', error);
+    console.error('Failed to compute timer stats:', error);
+    return getDefaultFocusStats();
   }
 };
 
-const getDefaultStats = (): UserStats => ({
+const getDefaultFocusStats = (): FocusStats => ({
   todayDuration: 0,
-  todayLimit: 45,
   weekTotal: 0,
   weekCount: 0,
   avgDuration: 0,
@@ -237,6 +234,34 @@ export const getProfileImage = async (): Promise<string | null> => {
   } catch (error) {
     console.error('Failed to get profile image:', error);
     return null;
+  }
+};
+
+// 首页「今日专注」卡片背景图（镜像头像图的持久化模式：复制到沙盒 + 存 uri + 自动备份）
+export const saveFocusBackground = async (imageUri: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(FOCUS_BG_KEY, imageUri);
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save focus background:', error);
+  }
+};
+
+export const getFocusBackground = async (): Promise<string | null> => {
+  try {
+    return await AsyncStorage.getItem(FOCUS_BG_KEY);
+  } catch (error) {
+    console.error('Failed to get focus background:', error);
+    return null;
+  }
+};
+
+export const clearFocusBackground = async (): Promise<void> => {
+  try {
+    await AsyncStorage.removeItem(FOCUS_BG_KEY);
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to clear focus background:', error);
   }
 };
 
@@ -479,6 +504,28 @@ export const getModel = async (): Promise<string> => {
   }
 };
 
+// 视觉模型（图片识别）：与文本模型分开设置，发送图片时使用
+export const setVisionModel = async (model: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(
+      AI_VISION_MODEL,
+      model && model.trim() ? model.trim() : DEFAULT_VISION_MODEL,
+    );
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save vision model:', error);
+  }
+};
+
+export const getVisionModel = async (): Promise<string> => {
+  try {
+    return (await AsyncStorage.getItem(AI_VISION_MODEL)) || DEFAULT_VISION_MODEL;
+  } catch (error) {
+    console.error('Failed to get vision model:', error);
+    return DEFAULT_VISION_MODEL;
+  }
+};
+
 export const getCachedInsight = async (period: string): Promise<CachedInsight | null> => {
   try {
     const raw = await AsyncStorage.getItem(AI_INSIGHTS_CACHE_KEY);
@@ -640,9 +687,152 @@ export const saveChatMeta = async (meta: ChatMeta): Promise<void> => {
 export const clearChat = async (): Promise<void> => {
   try {
     await AsyncStorage.multiRemove([CHAT_MESSAGES_KEY, CHAT_SUMMARY_KEY, CHAT_META_KEY]);
+    // 同时删除聊天图片沙盒目录（避免残留图片占用空间）
+    const { clearChatImages } = await import('./chat');
+    await clearChatImages();
     autoBackup();
   } catch (error) {
     console.error('Failed to clear chat:', error);
+  }
+};
+
+// ============ 提醒事项（Reminder）存储 ============
+
+const REMINDERS_KEY = 'reminders';
+
+export const getReminders = async (): Promise<Reminder[]> => {
+  try {
+    const data = await AsyncStorage.getItem(REMINDERS_KEY);
+    const list: Reminder[] = data ? JSON.parse(data) : [];
+    return list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
+  } catch (error) {
+    console.error('Failed to get reminders:', error);
+    return [];
+  }
+};
+
+export const saveReminders = async (list: Reminder[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(REMINDERS_KEY, JSON.stringify(list));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save reminders:', error);
+  }
+};
+
+export const addReminder = async (reminder: Reminder): Promise<void> => {
+  const list = await getReminders();
+  list.push(reminder);
+  await saveReminders(list);
+};
+
+export const updateReminder = async (reminder: Reminder): Promise<void> => {
+  const list = await getReminders();
+  const idx = list.findIndex((r) => r.id === reminder.id);
+  if (idx !== -1) {
+    list[idx] = reminder;
+    await saveReminders(list);
+  }
+};
+
+export const deleteReminder = async (id: string): Promise<void> => {
+  const list = await getReminders();
+  await saveReminders(list.filter((r) => r.id !== id));
+};
+
+// ============ 习惯打卡（Habit）存储 ============
+const HABITS_KEY = 'habits';
+const HABIT_CHECKINS_KEY = 'habit_checkins';
+
+export const getHabits = async (): Promise<Habit[]> => {
+  try {
+    const data = await AsyncStorage.getItem(HABITS_KEY);
+    const list: Habit[] = data ? JSON.parse(data) : [];
+    return list.sort((a, b) => a.createdAt - b.createdAt);
+  } catch (error) {
+    console.error('Failed to get habits:', error);
+    return [];
+  }
+};
+
+export const saveHabit = async (habit: Habit): Promise<void> => {
+  try {
+    const list = await getHabits();
+    const idx = list.findIndex((h) => h.id === habit.id);
+    if (idx !== -1) list[idx] = habit;
+    else list.push(habit);
+    await AsyncStorage.setItem(HABITS_KEY, JSON.stringify(list));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save habit:', error);
+  }
+};
+
+export const deleteHabit = async (id: string): Promise<void> => {
+  try {
+    const list = await getHabits();
+    await AsyncStorage.setItem(HABITS_KEY, JSON.stringify(list.filter((h) => h.id !== id)));
+    // 同时删除该习惯的全部打卡记录
+    const checks = await getCheckins();
+    await AsyncStorage.setItem(HABIT_CHECKINS_KEY, JSON.stringify(checks.filter((c) => c.habitId !== id)));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to delete habit:', error);
+  }
+};
+
+export const getCheckins = async (): Promise<HabitCheckin[]> => {
+  try {
+    const data = await AsyncStorage.getItem(HABIT_CHECKINS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error('Failed to get checkins:', error);
+    return [];
+  }
+};
+
+// 切换某习惯在某天的打卡状态；返回切换后的「是否已打卡」
+export const toggleHabitCheckin = async (habitId: string, date: string): Promise<boolean> => {
+  try {
+    const checks = await getCheckins();
+    const idx = checks.findIndex((c) => c.habitId === habitId && c.date === date);
+    if (idx !== -1) {
+      checks.splice(idx, 1);
+      await AsyncStorage.setItem(HABIT_CHECKINS_KEY, JSON.stringify(checks));
+      return false;
+    }
+    checks.push({ id: generateId(), habitId, date, checkedAt: Date.now() });
+    await AsyncStorage.setItem(HABIT_CHECKINS_KEY, JSON.stringify(checks));
+    autoBackup();
+    return true;
+  } catch (error) {
+    console.error('Failed to toggle checkin:', error);
+    return false;
+  }
+};
+
+export const isHabitChecked = async (habitId: string, date: string): Promise<boolean> => {
+  const checks = await getCheckins();
+  return checks.some((c) => c.habitId === habitId && c.date === date);
+};
+
+// 计算截至今天（含）的连续打卡天数
+export const getHabitStreak = async (habitId: string): Promise<number> => {
+  try {
+    const checks = await getCheckins();
+    const dates = new Set(checks.filter((c) => c.habitId === habitId).map((c) => c.date));
+    let streak = 0;
+    const d = new Date();
+    // 若今天还没打卡，从昨天开始算（避免断签当天误判为 0）
+    if (!dates.has(toDateStr(d))) d.setDate(d.getDate() - 1);
+    while (dates.has(toDateStr(d))) {
+      streak += 1;
+      d.setDate(d.getDate() - 1);
+    }
+    return streak;
+  } catch (error) {
+    console.error('Failed to get streak:', error);
+    return 0;
   }
 };
 
@@ -694,3 +884,41 @@ export const deleteLedgerEntry = async (id: string): Promise<void> => {
     console.error('Failed to delete ledger entry:', error);
   }
 };
+
+// ============ 记账分类（可自定义）============
+// 默认分类来自 ledger.ts，用户可在「记账」弹窗里自行增删；自定义后持久化到这里。
+
+const LEDGER_CATS_EXPENSE_KEY = 'ledger_cats_expense';
+const LEDGER_CATS_INCOME_KEY = 'ledger_cats_income';
+
+export const getLedgerCategories = async (type: LedgerType): Promise<string[]> => {
+  const key = type === 'expense' ? LEDGER_CATS_EXPENSE_KEY : LEDGER_CATS_INCOME_KEY;
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return arr;
+    }
+  } catch (error) {
+    console.error('Failed to get ledger categories:', error);
+  }
+  return type === 'expense' ? [...EXPENSE_CATEGORIES] : [...INCOME_CATEGORIES];
+};
+
+export const setLedgerCategories = async (type: LedgerType, list: string[]): Promise<void> => {
+  const key = type === 'expense' ? LEDGER_CATS_EXPENSE_KEY : LEDGER_CATS_INCOME_KEY;
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify(list));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to set ledger categories:', error);
+  }
+};
+
+// ============ 需要随「清除全部数据」一并删除的沙盒媒体目录 ============
+// 全量数据 key 清单已迁至 ./keys（ALL_DATA_KEYS），保持 storage 不反向依赖 backup/autoBackup。
+export const ALL_MEDIA_DIRS = [
+  `${FileSystem.documentDirectory}memos/`,
+  `${FileSystem.documentDirectory}chat_images/`,
+];
+

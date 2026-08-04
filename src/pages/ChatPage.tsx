@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import {
   View,
   Text,
@@ -14,10 +14,13 @@ import {
   Platform,
   ScrollView,
   Modal,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
+import { QuickMemo } from '../types';
 import {
   ChatMessage,
   ChatMeta,
@@ -26,6 +29,8 @@ import {
   estimateChars,
   CHAT_BUDGET_CHARS,
   COMPRESS_KEEP_RECENT,
+  processAndSaveImage,
+  getVisionImageLimit,
 } from '../utils/chat';
 import {
   getChatMessages,
@@ -35,12 +40,16 @@ import {
   getChatMeta,
   saveChatMeta,
   clearChat,
+  addQuickMemo,
   generateId,
+  getModel,
+  getVisionModel,
 } from '../utils/storage';
 import { onDataReset } from '../utils/appEvents';
+import ProfileModal from '../components/ProfileModal';
 
 const SYSTEM_CONTEXT_PROMPT = (summary: string) =>
-  `你是一位温和、懂拖延心理的 AI 助手。以下是用户的长期个人档案（由历史对话压缩而来），请优先参考它来回答，但不要向用户透露"你看到了这份档案"：
+  `你是一位温和、懂专注与时间管理的 AI 助手。以下是用户的长期个人档案（由历史对话压缩而来），请优先参考它来回答，但不要向用户透露"你看到了这份档案"：
 ${summary}`;
 
 const ChatPage: React.FC = () => {
@@ -51,6 +60,13 @@ const ChatPage: React.FC = () => {
   const [meta, setMeta] = useState<ChatMeta>({ compressCount: 0, lastCompressedAt: null });
   const [compressLoading, setCompressLoading] = useState(false);
 
+  // 当前使用的文本模型与视觉模型（用于提示发送图片时使用的模型）
+  const [model, setModel] = useState('glm-4-flash');
+  const [visionModel, setVisionModel] = useState('glm-4v-flash');
+
+  // 待发送的图片（沙盒文件 uri 列表），点发送后清空
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+
   // 批量删除选择模式（由顶栏「选择」按钮进入）
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<{ [id: string]: boolean }>({});
@@ -58,15 +74,70 @@ const ChatPage: React.FC = () => {
   // 复制浮层（在普通 ScrollView 中可选词，支持选任意一段）
   const [copyText, setCopyText] = useState<string | null>(null);
 
+  // 「我的档案」全屏 Modal
+  const [profileVisible, setProfileVisible] = useState(false);
+
   const flatRef = useRef<FlatList>(null);
   const loaded = useRef(false);
 
   const reload = async () => {
-    const [msgs, sum, m] = await Promise.all([getChatMessages(), getChatSummary(), getChatMeta()]);
+    const [msgs, sum, m, md, vmd] = await Promise.all([
+      getChatMessages(),
+      getChatSummary(),
+      getChatMeta(),
+      getModel(),
+      getVisionModel(),
+    ]);
     setMessages(msgs);
     setSummary(sum);
     setMeta(m);
+    setModel(md || 'glm-4-flash');
+    setVisionModel(vmd || 'glm-4v-flash');
     loaded.current = true;
+  };
+
+  // 从相册多选图片，统一转 JPEG + 缩放后存入沙盒，加入待发送列表。
+  // 一次性最多几张取决于当前视觉模型能力：glm-4v-flash 仅 1 张，glm-4v/glm-4v-plus 等最多 5 张。
+  const pickImage = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted' && perm.accessPrivileges !== 'limited') {
+        Alert.alert('需要相册权限', '请在系统设置中允许访问照片后重试。');
+        return;
+      }
+      const cap = getVisionImageLimit(visionModel);
+      if (pendingImages.length >= cap) {
+        Alert.alert(
+          '已达图片上限',
+          `当前图片模型「${visionModel}」最多支持 ${cap} 张${cap === 1 ? '。如需一次发多张，请在「我的 → AI 智能分析」把图片模型改成 glm-4v 或 glm-4v-plus（最多 5 张）' : ''}。`,
+        );
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'] as any,
+        quality: 1, // 取原图 URI，后续由 manipulator 统一压缩
+        allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: cap - pendingImages.length,
+      });
+      if (!res.canceled && res.assets && res.assets.length) {
+        const added: string[] = [];
+        for (const asset of res.assets) {
+          if (!asset.uri) continue;
+          // 统一转 JPEG + 缩放到 1024px 以内（解决 HEIC 导致的 1210 错误）
+          const uri = await processAndSaveImage(asset.uri);
+          added.push(uri);
+        }
+        if (added.length) setPendingImages((prev) => [...prev, ...added].slice(0, cap));
+      }
+    } catch (e: any) {
+      console.error('[Chat] pickImage failed', e);
+      Alert.alert('选择图片失败', e?.message ? String(e.message) : '无法打开相册，请重试');
+    }
+  };
+
+  const removePendingImage = (uri: string) => {
+    setPendingImages((prev) => prev.filter((u) => u !== uri));
   };
 
   useEffect(() => {
@@ -89,11 +160,18 @@ const ChatPage: React.FC = () => {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || loading || compressLoading) return;
-    const userMsg: ChatMessage = { id: generateId(), role: 'user', content: text, ts: Date.now() };
+    if ((!text && pendingImages.length === 0) || loading || compressLoading) return;
+    const userMsg: ChatMessage = {
+      id: generateId(),
+      role: 'user',
+      content: text,
+      ts: Date.now(),
+      images: pendingImages.length ? [...pendingImages] : undefined,
+    };
     const next = [...messages, userMsg];
     setMessages(next);
     setInput('');
+    setPendingImages([]);
     scrollToEnd();
     setLoading(true);
     try {
@@ -132,6 +210,30 @@ const ChatPage: React.FC = () => {
       Alert.alert('压缩失败', e?.message ? String(e.message) : '请稍后重试');
     } finally {
       setCompressLoading(false);
+    }
+  };
+
+  // 把某条对话存成一条「随手记」
+  const handleSaveToMemo = async (item: ChatMessage) => {
+    if (!item.content && (!item.images || item.images.length === 0)) {
+      Alert.alert('无法保存', '这条消息没有文字也没有图片');
+      return;
+    }
+    const memo: QuickMemo = {
+      id: generateId(),
+      content: item.content || (item.images && item.images.length > 0 ? '[图片消息]' : ''),
+      highlightRanges: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      pinned: false,
+      media: (item.images || []).map((uri) => ({ type: 'image' as const, file: uri })),
+      tags: ['AI对话'],
+    };
+    try {
+      await addQuickMemo(memo);
+      Alert.alert('已存到随手记', '可在「随手记」标签页查看这条记录');
+    } catch (e: any) {
+      Alert.alert('保存失败', e?.message ? String(e.message) : '请稍后重试');
     }
   };
 
@@ -187,70 +289,19 @@ const ChatPage: React.FC = () => {
     ]);
   };
 
-  const renderItem = ({ item }: { item: ChatMessage }) => {
-    const isUser = item.role === 'user';
-    const selected = !!selectedIds[item.id];
-
-    // 选择模式：TouchableOpacity 支持点选/长按切换，文字不可选
-    if (isSelecting) {
-      return (
-        <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
-          <TouchableOpacity style={styles.checkBox} onPress={() => toggleSelect(item.id)}>
-            <Ionicons
-              name={selected ? 'checkbox' : 'square-outline'}
-              size={20}
-              color={selected ? COLORS.primary : COLORS.textLight}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={() => toggleSelect(item.id)}
-            onLongPress={() => toggleSelect(item.id)}
-            style={[
-              styles.bubble,
-              isUser ? styles.bubbleUser : styles.bubbleBot,
-              selected && styles.bubbleSelected,
-            ]}
-          >
-            <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>
-              {item.content}
-            </Text>
-            <Text style={[styles.timeText, isUser && styles.timeTextUser]}>
-              {new Date(item.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
-    // 普通模式：长按（或点复制图标）→ 打开选词浮层；气泡文字不可选，避免与列表手势冲突
-    const copyBtn = (
-      <TouchableOpacity
-        style={styles.copyBtn}
-        onPress={() => setCopyText(item.content)}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Ionicons name="copy-outline" size={16} color={COLORS.textLight} />
-      </TouchableOpacity>
-    );
-
-    return (
-      <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
-        {isUser ? copyBtn : null}
-        <TouchableWithoutFeedback onLongPress={() => setCopyText(item.content)}>
-          <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleBot]}>
-            <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>
-              {item.content}
-            </Text>
-            <Text style={[styles.timeText, isUser && styles.timeTextUser]}>
-              {new Date(item.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-            </Text>
-          </View>
-        </TouchableWithoutFeedback>
-        {!isUser ? copyBtn : null}
-      </View>
-    );
-  };
+  const renderItem = useCallback(
+    ({ item }: { item: ChatMessage }) => (
+      <ChatRow
+        item={item}
+        isSelecting={isSelecting}
+        selected={!!selectedIds[item.id]}
+        onCopy={setCopyText}
+        onToggleSelect={toggleSelect}
+        onSaveToMemo={handleSaveToMemo}
+      />
+    ),
+    [isSelecting, selectedIds, setCopyText, toggleSelect, handleSaveToMemo],
+  );
 
   return (
     <View style={{ flex: 1 }}>
@@ -288,6 +339,9 @@ const ChatPage: React.FC = () => {
                   <Text style={styles.summaryBadgeText}>已压缩 {meta.compressCount} 次</Text>
                 </View>
               ) : null}
+              <TouchableOpacity style={styles.iconBtn} onPress={() => setProfileVisible(true)}>
+                <Ionicons name="book-outline" size={20} color={COLORS.textLight} />
+              </TouchableOpacity>
               <TouchableOpacity style={styles.iconBtn} onPress={handleCompress} disabled={compressLoading}>
                 {compressLoading ? (
                   <ActivityIndicator size="small" color={COLORS.primary} />
@@ -330,10 +384,14 @@ const ChatPage: React.FC = () => {
           extraData={selectedIds}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={scrollToEnd}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          windowSize={6}
+          removeClippedSubviews={true}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="chatbubbles-outline" size={42} color={COLORS.textLighter} />
-              <Text style={styles.emptyText}>和 AI 聊聊你的拖延与随手记吧</Text>
+              <Text style={styles.emptyText}>和 AI 聊聊你的专注、规划与随手记吧</Text>
               <Text style={styles.emptySub}>对话变长时，点右上角「压缩」可生成长期摘要</Text>
             </View>
           }
@@ -342,25 +400,49 @@ const ChatPage: React.FC = () => {
         {/* 输入栏 */}
         {!isSelecting && (
           <View style={styles.inputBar}>
-            <TextInput
-              style={styles.input}
-              placeholder="说点什么…"
-              placeholderTextColor={COLORS.textLighter}
-              value={input}
-              onChangeText={setInput}
-              multiline
-            />
-            <TouchableOpacity
-              style={[styles.sendBtn, (!input.trim() || loading) && styles.sendBtnDisabled]}
-              onPress={handleSend}
-              disabled={!input.trim() || loading}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="send" size={18} color="#fff" />
-              )}
-            </TouchableOpacity>
+            {/* 待发送图片预览 */}
+            {pendingImages.length > 0 && (
+              <View style={styles.pendingImages}>
+                {pendingImages.map((uri) => (
+                  <View key={uri} style={styles.pendingImgWrap}>
+                    <Image source={{ uri }} style={styles.pendingImg} resizeMode="cover" />
+                    <TouchableOpacity style={styles.pendingImgRemove} onPress={() => removePendingImage(uri)}>
+                      <Ionicons name="close" size={12} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+            <View style={styles.inputRow}>
+              <TouchableOpacity style={styles.imgPickBtn} onPress={pickImage} disabled={loading}>
+                <Ionicons name="image-outline" size={22} color={COLORS.primary} />
+              </TouchableOpacity>
+              <TextInput
+                style={styles.input}
+                placeholder="说点什么…"
+                placeholderTextColor={COLORS.textLighter}
+                value={input}
+                onChangeText={setInput}
+                multiline
+              />
+              <TouchableOpacity
+                style={[styles.sendBtn, ((!input.trim() && pendingImages.length === 0) || loading) && styles.sendBtnDisabled]}
+                onPress={handleSend}
+                disabled={(!input.trim() && pendingImages.length === 0) || loading}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="send" size={18} color="#fff" />
+                )}
+              </TouchableOpacity>
+            </View>
+            {/* 图片将由视觉模型识别的提示 */}
+            {pendingImages.length > 0 && (
+              <Text style={styles.visionHint}>
+                含图片，将使用视觉模型 {visionModel} 识别（最多 {getVisionImageLimit(visionModel)} 张）
+              </Text>
+            )}
           </View>
         )}
       </KeyboardAvoidingView>
@@ -408,9 +490,132 @@ const ChatPage: React.FC = () => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <ProfileModal
+        visible={profileVisible}
+        summary={summary}
+        onClose={() => setProfileVisible(false)}
+        onSaved={async () => {
+          const s = await getChatSummary();
+          setSummary(s);
+        }}
+        onRequestCompress={handleCompress}
+      />
     </View>
   );
 };
+
+// 单条消息气泡（抽取为 memo 组件，缓解 FlatList 的 VirtualizedList 性能警告）
+const ChatRow = memo(
+  ({
+    item,
+    isSelecting,
+    selected,
+    onCopy,
+    onToggleSelect,
+    onSaveToMemo,
+  }: {
+    item: ChatMessage;
+    isSelecting: boolean;
+    selected: boolean;
+    onCopy: (text: string) => void;
+    onToggleSelect: (id: string) => void;
+    onSaveToMemo: (item: ChatMessage) => void;
+  }) => {
+    const isUser = item.role === 'user';
+
+    const imagesBlock =
+      item.images && item.images.length > 0 ? (
+        <View style={styles.bubbleImages}>
+          {item.images.map((uri, idx) => (
+            <Image key={idx} source={{ uri }} style={styles.bubbleImage} resizeMode="cover" />
+          ))}
+        </View>
+      ) : null;
+    const textBlock = item.content ? (
+      <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>
+        {item.content}
+      </Text>
+    ) : null;
+    const timeBlock = (
+      <Text style={[styles.timeText, isUser && styles.timeTextUser]}>
+        {new Date(item.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+      </Text>
+    );
+
+    if (isSelecting) {
+      return (
+        <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
+          <TouchableOpacity style={styles.checkBox} onPress={() => onToggleSelect(item.id)}>
+            <Ionicons
+              name={selected ? 'checkbox' : 'square-outline'}
+              size={20}
+              color={selected ? COLORS.primary : COLORS.textLight}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => onToggleSelect(item.id)}
+            onLongPress={() => onToggleSelect(item.id)}
+            style={[
+              styles.bubble,
+              isUser ? styles.bubbleUser : styles.bubbleBot,
+              selected && styles.bubbleSelected,
+            ]}
+          >
+            {imagesBlock}
+            {textBlock}
+            {timeBlock}
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    const copyBtn = (
+      <TouchableOpacity
+        style={styles.copyBtn}
+        onPress={() => onCopy(item.content)}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+        <Ionicons name="copy-outline" size={16} color={COLORS.textLight} />
+      </TouchableOpacity>
+    );
+
+    const memoBtn = (
+      <TouchableOpacity
+        style={styles.memoBtn}
+        onPress={() => onSaveToMemo(item)}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+        <Ionicons name="bookmark-outline" size={16} color={COLORS.textLight} />
+      </TouchableOpacity>
+    );
+
+    return (
+      <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
+        {isUser ? (
+          <View style={styles.rowActions}>
+            {copyBtn}
+            {memoBtn}
+          </View>
+        ) : null}
+        <TouchableWithoutFeedback onLongPress={() => onCopy(item.content)}>
+          <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleBot]}>
+            {imagesBlock}
+            {textBlock}
+            {timeBlock}
+          </View>
+        </TouchableWithoutFeedback>
+        {!isUser ? (
+          <View style={styles.rowActions}>
+            {copyBtn}
+            {memoBtn}
+          </View>
+        ) : null}
+      </View>
+    );
+  },
+);
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
@@ -503,6 +708,23 @@ const styles = StyleSheet.create({
   bubbleBot: { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderBottomLeftRadius: 4 },
   bubbleSelected: { borderWidth: 2, borderColor: COLORS.primary },
   bubbleText: { fontSize: 14, lineHeight: 20 },
+  // 气泡内图片
+  bubbleImages: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  bubbleImage: { width: 120, height: 120, borderRadius: 10, backgroundColor: COLORS.background },
+  // 待发送图片
+  pendingImages: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, paddingBottom: 8 },
+  pendingImgWrap: { position: 'relative', width: 64, height: 64 },
+  pendingImg: { width: 64, height: 64, borderRadius: 10, backgroundColor: COLORS.background },
+  pendingImgRemove: {
+    position: 'absolute', top: -4, right: -4, width: 20, height: 20, borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center',
+  },
+  inputRow: { flexDirection: 'row', alignItems: 'flex-end' },
+  imgPickBtn: {
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+    marginRight: 6,
+  },
+  visionHint: { fontSize: 11.5, color: COLORS.primary, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
   bubbleTextUser: { color: '#fff' },
   bubbleTextBot: { color: COLORS.text },
   timeText: {
@@ -513,14 +735,14 @@ const styles = StyleSheet.create({
   },
   timeTextUser: { color: 'rgba(255,255,255,0.75)' },
   // 复制按钮 / 选择框
+  rowActions: { flexDirection: 'row', alignItems: 'center' },
   copyBtn: { paddingHorizontal: 8, paddingVertical: 10 },
+  memoBtn: { paddingHorizontal: 8, paddingVertical: 10 },
   checkBox: { paddingHorizontal: 6, paddingVertical: 10 },
   empty: { alignItems: 'center', marginTop: 80 },
   emptyText: { fontSize: 15, color: COLORS.textLight, marginTop: 12 },
   emptySub: { fontSize: 12, color: COLORS.textLighter, marginTop: 6 },
   inputBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
     paddingHorizontal: 12,
     paddingVertical: 8,
     backgroundColor: COLORS.card,

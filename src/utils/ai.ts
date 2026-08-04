@@ -1,4 +1,4 @@
-import { ProcrastinationRecord, QuickMemo, LedgerEntry } from '../types';
+import { TimerSession, QuickMemo, LedgerEntry } from '../types';
 import { getMonthExpense, getMonthIncome, getCategoryBreakdown } from './ledger';
 import {
   getApiKey,
@@ -30,17 +30,17 @@ export interface AIInsightResult {
 export const GLM_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
 // 固定系统提示词（约 200 字，每次请求都带，但不含任何用户数据）
-const SYSTEM_PROMPT = `你是一位温和、专业的拖延行为分析师。用户会给你一份已经脱敏的拖延统计摘要（仅含匿名数字，无任何个人身份信息）。
+const SYSTEM_PROMPT = `你是一位温和、专业的专注行为分析师。用户会给你一份已经脱敏的专注时长统计摘要（仅含匿名数字，无任何个人身份信息）。
 请基于这些数字，输出一份结构化的中文分析，必须严格返回如下 JSON 格式（不要输出任何 JSON 以外的文字）：
 {
-  "findings": ["", ""],        // 3-5 条核心发现，指出拖延的模式与高峰，每条一句话
-  "triggers": [{"时段": "", "风险": "高|中|低", "原因": ""}],  // 1-3 个高风险时段及成因
+  "findings": ["", ""],        // 3-5 条核心发现，指出专注的模式与高峰，每条一句话
+  "triggers": [{"时段": "", "风险": "高|中|低", "原因": ""}],  // 1-3 个低专注时段及成因
   "suggestions": ["", ""]      // 3-5 条可执行的改善建议，具体、可落地
 }
 要求：语气友善、不评判；结论必须有数据支撑；不要编造统计里没有的信息。`;
 
 // 只在本地算好的聚合摘要，约 300 字，不含原始记录/备注/身份
-const buildSummary = (period: string, records: ProcrastinationRecord[]) => {
+const buildSummary = (period: string, records: TimerSession[]) => {
   const totalDuration = records.reduce((s, r) => s + r.duration, 0);
   const count = records.length;
   const longest = records.length ? Math.max(...records.map((r) => r.duration)) : 0;
@@ -49,10 +49,10 @@ const buildSummary = (period: string, records: ProcrastinationRecord[]) => {
 
   const category = calculateCategoryStats(records)
     .slice(0, 5)
-    .map((c) => ({ 原因: c.name, 占比: c.percentage, 时长分钟: c.duration }));
+    .map((c) => ({ 分类: c.name, 占比: c.percentage, 时长分钟: c.duration }));
 
   const taskType = calculateTaskTypeStats(records).map((t) => ({
-    类型: t.name === 'work' ? '工作' : t.name === 'life' ? '生活' : t.name === 'other' ? '其他' : t.name,
+    类型: t.name === 'work' ? '工作' : t.name === 'study' ? '学习' : t.name === 'exercise' ? '运动' : t.name === 'life' ? '生活' : t.name === 'rest' ? '休息' : '其他',
     占比: t.percentage,
   }));
 
@@ -73,7 +73,7 @@ const buildSummary = (period: string, records: ProcrastinationRecord[]) => {
     日均分钟: Math.round(totalDuration / days),
     平均单次分钟: avg,
     最长单次分钟: longest,
-    原因占比: category,
+    分类占比: category,
     任务类型占比: taskType,
     小时分布: hourDistribution,
     周趋势: weeklyTrend,
@@ -126,7 +126,7 @@ const callGLM = async (
           { role: 'system', content: SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `以下是我的拖延统计摘要（已脱敏）：\n${JSON.stringify(summary, null, 2)}\n请输出分析 JSON。`,
+            content: `以下是我的专注时长统计摘要（已脱敏）：\n${JSON.stringify(summary, null, 2)}\n请输出分析 JSON。`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -156,7 +156,7 @@ const callGLM = async (
 
 export const getAIInsights = async (
   period: 'day' | 'week' | 'month' | 'year',
-  records: ProcrastinationRecord[],
+  records: TimerSession[],
   force = false,
 ): Promise<{ result: AIInsightResult | null; source: 'cache' | 'api' | 'none' }> => {
   const apiKey = await getApiKey();

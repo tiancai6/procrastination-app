@@ -1,81 +1,74 @@
-name: Build Unsigned IPA (Expo)
+name: Build iOS IPA (unsigned)
 
-# 触发：推送到 main 分支，或手动在 Actions 页面点 Run workflow
+# 触发：① 推送到 main/master 自动构建；② 也可以在 GitHub 网页「Actions → 此工作流 → Run workflow」手动触发
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  build-ios:
-    runs-on: macos-latest   # GitHub 公共仓库：macOS 时长免费、无限
+  build:
+    # 必须在 macOS 上编译 iOS（Xcode 只能跑在 Mac）。GitHub 公共仓库的 macOS 分钟免费。
+    runs-on: macos-latest
+
     steps:
-      - name: 检出代码
+      - name: 拉取代码
         uses: actions/checkout@v4
 
-      - name: 安装 Node.js
+      - name: 安装 Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - name: 安装 JS 依赖（自动读取项目 .npmrc 的 legacy-peer-deps）
+      - name: 安装前端依赖
         run: npm install
 
-      - name: Expo prebuild 生成 iOS 原生工程
-        # CI=true 关闭交互；--no-install 不重复装 npm；--clean 先清旧的 ios/ 目录
-        run: CI=true npx expo prebuild --platform ios --no-install --clean
+      - name: 安装 CocoaPods（iOS 原生依赖管理）
+        run: brew install cocoapods
 
-      - name: 安装 iOS 原生依赖 (CocoaPods)
+      - name: 生成 iOS 原生工程（expo prebuild，--clean 会先清掉旧的 ios 目录）
+        run: npx expo prebuild --platform ios --clean
+        env:
+          EXPO_NO_TELEMETRY: "1"
+
+      - name: 安装 iOS 原生依赖（pod install）
+        run: cd ios && pod install
+
+      - name: 定位 Xcode 工程（动态读取，避免中文工程名写死）
+        id: locate
         run: |
           cd ios
-          pod install --repo-update
-          cd ..
-
-      - name: 归档（关闭代码签名，生成未签名 xcarchive）
-        run: |
-          cd ios
-          # 注意：.xcworkspace / .xcodeproj 都是"目录"，必须用 ls -d 取目录名本身
           WS=$(ls -d *.xcworkspace | head -n1)
-          PROJ=$(ls -d *.xcodeproj | head -n1)
-          NAME="${PROJ%.xcodeproj}"
-          echo "📦 Workspace: $WS"
-          echo "📦 Project:   $PROJ"
-          echo "📦 Name:      $NAME"
-          echo "📋 Workspace schemes:"
-          xcodebuild -list -workspace "$WS" 2>&1 || true
-          # 优先用与工程同名的 scheme（Expo prebuild 生成的就是它）
-          SCHEMES=$(xcodebuild -list -workspace "$WS" 2>/dev/null \
-            | awk '/Schemes:/{f=1;next} f&&NF{print $1}')
-          if echo "$SCHEMES" | grep -qx "$NAME"; then
-            SCHEME="$NAME"
-          else
-            SCHEME=$(echo "$SCHEMES" | grep -v -iE '^Pods|Tests?$' | head -n1)
-          fi
-          echo "▶️ Scheme: $SCHEME"
-          if [ -z "$SCHEME" ]; then
-            echo "❌ 未找到可用 scheme"
-            exit 1
-          fi
-          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
-            -sdk iphoneos -destination 'generic/platform=iOS' \
-            -archivePath "$PWD/build/App.xcarchive" archive \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER=""
+          SCHEME=$(basename "$WS" .xcworkspace)
+          echo "workspace=$WS" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "检测到工程: $WS / scheme: $SCHEME"
 
-      - name: 提取未签名 IPA（直接 zip .app，跳过 exportArchive）
+      - name: 编译为未签名 xcarchive
         run: |
           cd ios
-          echo "📋 归档产物："
-          ls -R build/App.xcarchive/Products/Applications || true
-          mkdir -p Payload
-          cp -r "build/App.xcarchive/Products/Applications/"*.app Payload/
-          zip -qr ../unsigned.ipa Payload
-          rm -rf Payload
-          echo "✅ 已生成 unsigned.ipa"
-          ls -lh ../unsigned.ipa
+          xcodebuild -workspace "${{ steps.locate.outputs.workspace }}" \
+            -scheme "${{ steps.locate.outputs.scheme }}" \
+            -configuration Release \
+            -archivePath build/App.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
 
-      - name: 上传 IPA 产物
+      - name: 手工打包为未签名 IPA（Sideloadly 会在你电脑上重签）
+        run: |
+          cd ios
+          APP=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n1)
+          echo "找到 App: $APP"
+          mkdir -p build/Payload
+          cp -r "$APP" build/Payload/
+          cd build && zip -r ../dailytrace.ipa Payload && cd ..
+          echo "生成 IPA: $(pwd)/dailytrace.ipa"
+
+      - name: 上传 IPA 作为构建产物（在 Actions 运行页的 Artifacts 下载）
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-ipa
-          path: unsigned.ipa
+          name: dailytrace-unsigned-ipa
+          path: ios/dailytrace.ipa

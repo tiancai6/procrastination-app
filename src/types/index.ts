@@ -1,26 +1,24 @@
-export interface ProcrastinationRecord {
+// ============ 专注计时（通用计时，健身/工作均可） ============
+export type TimerCategory = 'work' | 'study' | 'exercise' | 'life' | 'rest' | 'other';
+
+export interface TimerSession {
   id: string;
-  startTime: number;
-  endTime: number;
-  duration: number;
-  reason: string;
-  taskType: 'work' | 'life' | 'entertainment' | 'other';
-  note?: string;
+  startTime: number;   // 开始时间戳(ms)
+  endTime: number;     // 结束时间戳(ms)
+  duration: number;    // 时长（分钟）
+  category: TimerCategory; // 分类（结束后选择）
+  what: string;        // 这段时间做了什么
   createdAt: number;
 }
 
 export interface TimerState {
   isRunning: boolean;
   startTime: number | null;
-  currentDuration: number;
-  selectedReason: string | null;
-  selectedTaskType: 'work' | 'life' | 'entertainment' | 'other' | null;
-  selectedNote: string;
+  currentDuration: number; // 当前计时（分钟）
 }
 
-export interface UserStats {
+export interface FocusStats {
   todayDuration: number;
-  todayLimit: number;
   weekTotal: number;
   weekCount: number;
   avgDuration: number;
@@ -42,10 +40,11 @@ export interface TimePattern {
   duration: number;
 }
 
+// 专注洞察（AI 可选）
 export interface InsightResult {
   mostFrequentTimeRange: string;
-  mostCommonReason: string;
-  longestDurationReason: string;
+  mostCommonCategory: string;
+  longestDurationCategory: string;
   peakHours: number[];
 }
 
@@ -82,7 +81,7 @@ export interface CheckinRecord {
   completedTasks: CompletedTask[];
   status: 'completed' | 'uncompleted' | 'makeup';
   totalDuration: number;
-  procrastinationTime: number;
+  delayTime: number;
   completedAt: number;
 }
 
@@ -157,3 +156,74 @@ export interface LedgerEntry {
   createdAt: number;
   updatedAt: number;
 }
+
+// ============ 提醒事项（待办） ============
+export interface Reminder {
+  id: string;
+  title: string;               // 提醒内容
+  date: string;                // 日期 YYYY-MM-DD
+  time?: string;               // 可选时间 HH:mm
+  note?: string;               // 可选备注
+  done: boolean;               // 是否已完成
+  notificationId?: string | null; // 本地通知 ID，用于取消
+  createdAt: number;
+}
+
+// ============ 习惯打卡 ============
+export interface Habit {
+  id: string;
+  name: string;                // 习惯名称
+  note?: string;               // 备注
+  frequency: 'daily' | 'weekly'; // 每日 / 每周选定星期几
+  weekDays: number[];          // weekly 时选中的星期几 [0=日,1=一,...,6=六]
+  reminderTime?: string | null; // 可选提醒时间 HH:mm
+  color: string;               // 卡片主题色（hex）
+  createdAt: number;
+  status: 'active' | 'paused';
+}
+
+export interface HabitCheckin {
+  id: string;
+  habitId: string;
+  date: string;                // YYYY-MM-DD
+  checkedAt: number;
+}
+
+// ============ 每日三餐 ============
+export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+
+export interface MealEntry {
+  id: string;
+  type: MealType;              // 早 / 午 / 晚 / 加餐
+  content: string;             // 这顿吃了什么（文本描述）
+  date: string;                // 日期 YYYY-MM-DD
+  createdAt: number;
+  nutrition?: MealNutrition;   // 本餐营养估算（含逐项明细）
+}
+
+export type MealAdequacy = '不足' | '适量' | '过量';
+
+// 单餐营养里的「一项食物」，用于「依据」展示
+export interface MealNutritionItem {
+  name: string;     // 食物名（尽量含大致分量，如「鸡蛋 2个」）
+  protein: number;  // 蛋白质 g
+  calories: number; // 热量 kcal
+  fat?: number;     // 脂肪 g
+  carbs?: number;   // 碳水 g
+  fiber?: number;   // 膳食纤维 g
+}
+
+export interface MealNutrition {
+  protein: number;     // 蛋白质 g
+  calories: number;    // 热量 kcal
+  fat?: number;        // 脂肪 g
+  carbs?: number;      // 碳水 g
+  fiber?: number;      // 膳食纤维 g
+  water?: number;      // 饮水 ml
+  items: MealNutritionItem[]; // 逐项明细（依据）
+  adequacy: MealAdequacy;     // 相对推荐量：不足 / 适量 / 过量
+  comment: string;     // 一句话点评与建议
+}
+
+// 兼容旧引用（历史类型名）
+export type NutritionResult = MealNutrition;

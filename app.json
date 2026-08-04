@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "拖延记录",
-    "slug": "procrastination-app",
+    "name": "日迹",
+    "slug": "dailytrace",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -17,7 +17,7 @@
       "package": "com.example.procrastination",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#2563EB"
+        "backgroundColor": "#22D3EE"
       },
       "permissions": [
         "android.permission.RECORD_AUDIO"
@@ -35,7 +35,7 @@
       ],
       "@react-native-community/datetimepicker"
     ],
-    "scheme": "procrastination",
+    "scheme": "dailytrace",
     "extra": {
       "router": {},
       "eas": {

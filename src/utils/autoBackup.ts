@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { exportBackup } from './backup';
+import { ALL_DATA_KEYS } from './keys';
 
 const BACKUP_DIR = `${FileSystem.documentDirectory}backup/`;
 const AUTO_BACKUP_FILE = `${BACKUP_DIR}latest.json`;
@@ -8,25 +9,6 @@ const LAST_BACKUP_KEY = 'last_auto_backup_at';
 const LAST_MANUAL_EXPORT_KEY = 'last_manual_export_at';
 
 const REMIND_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
-
-const BACKUP_KEYS = [
-  'procrastination_records',
-  'procrastination_stats',
-  'procrastination_task_plans',
-  'procrastination_plans',
-  'procrastination_checkin_records',
-  'procrastination_reward_records',
-  'procrastination_profile_image',
-  'quick_memos',
-  'ledger_entries',
-  'chat_messages',
-  'chat_summary',
-  'chat_meta',
-  'ai_api_key',
-  'ai_model',
-  'ai_insights_cache',
-  'memo_analysis_cache',
-];
 
 interface AutoBackupFile {
   savedAt: number;
@@ -47,7 +29,7 @@ const ensureDir = async (): Promise<void> => {
 export const autoBackup = async (): Promise<void> => {
   try {
     await ensureDir();
-    const entries = await AsyncStorage.multiGet(BACKUP_KEYS);
+    const entries = await AsyncStorage.multiGet(ALL_DATA_KEYS);
     const data: Record<string, string | null> = {};
     entries.forEach(([key, value]) => {
       data[key] = value;
@@ -74,7 +56,7 @@ export const autoBackup = async (): Promise<void> => {
 export const trySelfHeal = async (): Promise<{ recovered: boolean; reason?: string }> => {
   try {
     // 1. 校验 AsyncStorage 是否可用
-    const recordsRaw = await AsyncStorage.getItem('procrastination_records');
+    const recordsRaw = await AsyncStorage.getItem('timer_sessions');
     if (recordsRaw) {
       try {
         const parsed = JSON.parse(recordsRaw);
@@ -104,7 +86,7 @@ export const trySelfHeal = async (): Promise<{ recovered: boolean; reason?: stri
 
     // 3. 恢复到 AsyncStorage
     const pairs: [string, string][] = [];
-    for (const key of BACKUP_KEYS) {
+    for (const key of ALL_DATA_KEYS) {
       const value = backup.data[key];
       if (typeof value === 'string') {
         pairs.push([key, value]);

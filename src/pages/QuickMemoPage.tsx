@@ -292,10 +292,15 @@ const QuickMemoPage: React.FC = () => {
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: (type === 'image' ? ['images'] : ['videos']) as any,
         quality: 0.8,
+        // 图片支持一次多选（最多 9 张）；视频保持单条
+        allowsMultipleSelection: type === 'image',
+        selectionLimit: type === 'image' ? 9 : 1,
       });
-      if (!res.canceled && res.assets[0]) {
-        const file = await copyMediaToMemo(draftId, res.assets[0].uri);
-        setDraftMedia((prev) => [...prev, { type, file }]);
+      if (!res.canceled && res.assets && res.assets.length) {
+        for (const asset of res.assets) {
+          const file = await copyMediaToMemo(draftId, asset.uri);
+          setDraftMedia((prev) => [...prev, { type, file }]);
+        }
       }
     } catch (e: any) {
       console.error('[openPicker] failed', e);

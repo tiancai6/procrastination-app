@@ -1,21 +1,25 @@
-import { ProcrastinationRecord, CategoryStats, TimePattern, InsightResult } from '../types';
+import { TimerSession, CategoryStats, TimePattern, InsightResult } from '../types';
+import { FOCUS_CATEGORIES } from '../constants/reasons';
 
-export const calculateCategoryStats = (records: ProcrastinationRecord[]): CategoryStats[] => {
+const categoryLabel = (v: string): string =>
+  FOCUS_CATEGORIES.find((c) => c.value === v)?.label || v;
+
+export const calculateCategoryStats = (records: TimerSession[]): CategoryStats[] => {
   const categoryMap = new Map<string, { duration: number; count: number }>();
-  
+
   records.forEach(record => {
-    const existing = categoryMap.get(record.reason) || { duration: 0, count: 0 };
-    categoryMap.set(record.reason, {
+    const existing = categoryMap.get(record.category) || { duration: 0, count: 0 };
+    categoryMap.set(record.category, {
       duration: existing.duration + record.duration,
       count: existing.count + 1,
     });
   });
-  
+
   const totalDuration = records.reduce((sum, r) => sum + r.duration, 0);
-  
+
   return Array.from(categoryMap.entries())
     .map(([name, data]) => ({
-      name,
+      name: categoryLabel(name),
       duration: data.duration,
       count: data.count,
       percentage: totalDuration > 0 ? Math.round((data.duration / totalDuration) * 100) : 0,
@@ -23,32 +27,13 @@ export const calculateCategoryStats = (records: ProcrastinationRecord[]): Catego
     .sort((a, b) => b.duration - a.duration);
 };
 
-export const calculateTaskTypeStats = (records: ProcrastinationRecord[]): CategoryStats[] => {
-  const typeMap = new Map<string, { duration: number; count: number }>();
-  
-  records.forEach(record => {
-    const existing = typeMap.get(record.taskType) || { duration: 0, count: 0 };
-    typeMap.set(record.taskType, {
-      duration: existing.duration + record.duration,
-      count: existing.count + 1,
-    });
-  });
-  
-  const totalDuration = records.reduce((sum, r) => sum + r.duration, 0);
-  
-  return Array.from(typeMap.entries())
-    .map(([name, data]) => ({
-      name,
-      duration: data.duration,
-      count: data.count,
-      percentage: totalDuration > 0 ? Math.round((data.duration / totalDuration) * 100) : 0,
-    }))
-    .sort((a, b) => b.duration - a.duration);
+export const calculateTaskTypeStats = (records: TimerSession[]): CategoryStats[] => {
+  return calculateCategoryStats(records);
 };
 
-export const calculateTimePatterns = (records: ProcrastinationRecord[]): TimePattern[] => {
+export const calculateTimePatterns = (records: TimerSession[]): TimePattern[] => {
   const hourMap = new Map<number, { count: number; duration: number }>();
-  
+
   records.forEach(record => {
     const hour = new Date(record.startTime).getHours();
     const existing = hourMap.get(hour) || { count: 0, duration: 0 };
@@ -57,7 +42,7 @@ export const calculateTimePatterns = (records: ProcrastinationRecord[]): TimePat
       duration: existing.duration + record.duration,
     });
   });
-  
+
   return Array.from(hourMap.entries())
     .map(([hour, data]) => ({
       hour,
@@ -67,20 +52,20 @@ export const calculateTimePatterns = (records: ProcrastinationRecord[]): TimePat
     .sort((a, b) => a.hour - b.hour);
 };
 
-export const calculateWeeklyTrend = (records: ProcrastinationRecord[]): { day: string; duration: number }[] => {
+export const calculateWeeklyTrend = (records: TimerSession[]): { day: string; duration: number }[] => {
   const dayMap = new Map<number, number>();
   const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-  
+
   for (let i = 0; i < 7; i++) {
     dayMap.set(i, 0);
   }
-  
+
   records.forEach(record => {
     const day = new Date(record.startTime).getDay();
     const adjustedDay = day === 0 ? 6 : day - 1;
     dayMap.set(adjustedDay, (dayMap.get(adjustedDay) || 0) + record.duration);
   });
-  
+
   return Array.from(dayMap.entries())
     .map(([index, duration]) => ({
       day: weekDays[index],
@@ -89,25 +74,25 @@ export const calculateWeeklyTrend = (records: ProcrastinationRecord[]): { day: s
     .sort((a, b) => weekDays.indexOf(a.day) - weekDays.indexOf(b.day));
 };
 
-export const generateInsights = (records: ProcrastinationRecord[]): InsightResult => {
+export const generateInsights = (records: TimerSession[]): InsightResult => {
   if (records.length === 0) {
     return {
       mostFrequentTimeRange: '',
-      mostCommonReason: '',
-      longestDurationReason: '',
+      mostCommonCategory: '',
+      longestDurationCategory: '',
       peakHours: [],
     };
   }
-  
+
   const hourMap = new Map<number, number>();
   records.forEach(record => {
     const hour = new Date(record.startTime).getHours();
     hourMap.set(hour, (hourMap.get(hour) || 0) + record.duration);
   });
-  
+
   const sortedHours = Array.from(hourMap.entries()).sort((a, b) => b[1] - a[1]);
   const peakHour = sortedHours[0][0];
-  
+
   let timeRange = '';
   if (peakHour >= 0 && peakHour < 6) timeRange = '凌晨0:00-6:00';
   else if (peakHour >= 6 && peakHour < 9) timeRange = '早上6:00-9:00';
@@ -116,25 +101,25 @@ export const generateInsights = (records: ProcrastinationRecord[]): InsightResul
   else if (peakHour >= 14 && peakHour < 17) timeRange = '下午14:00-17:00';
   else if (peakHour >= 17 && peakHour < 20) timeRange = '傍晚17:00-20:00';
   else timeRange = '晚上20:00-24:00';
-  
-  const reasonMap = new Map<string, { count: number; duration: number }>();
+
+  const categoryMap = new Map<string, { count: number; duration: number }>();
   records.forEach(record => {
-    const existing = reasonMap.get(record.reason) || { count: 0, duration: 0 };
-    reasonMap.set(record.reason, {
+    const existing = categoryMap.get(record.category) || { count: 0, duration: 0 };
+    categoryMap.set(record.category, {
       count: existing.count + 1,
       duration: existing.duration + record.duration,
     });
   });
-  
-  const sortedByCount = Array.from(reasonMap.entries()).sort((a, b) => b[1].count - a[1].count);
-  const sortedByDuration = Array.from(reasonMap.entries()).sort((a, b) => b[1].duration - a[1].duration);
-  
+
+  const sortedByCount = Array.from(categoryMap.entries()).sort((a, b) => b[1].count - a[1].count);
+  const sortedByDuration = Array.from(categoryMap.entries()).sort((a, b) => b[1].duration - a[1].duration);
+
   const peakHours = sortedHours.slice(0, 3).map(h => h[0]);
-  
+
   return {
     mostFrequentTimeRange: timeRange,
-    mostCommonReason: sortedByCount[0][0],
-    longestDurationReason: sortedByDuration[0][0],
+    mostCommonCategory: categoryLabel(sortedByCount[0][0]),
+    longestDurationCategory: categoryLabel(sortedByDuration[0][0]),
     peakHours,
   };
 };
