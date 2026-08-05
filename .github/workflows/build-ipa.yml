@@ -48,6 +48,7 @@ jobs:
       - name: 编译为未签名 xcarchive
         run: |
           cd ios
+          export PATH="$PATH:$(dirname $(which node))"
           xcodebuild -workspace "${{ steps.locate.outputs.workspace }}" \
             -scheme "${{ steps.locate.outputs.scheme }}" \
             -configuration Release \
@@ -66,6 +67,16 @@ jobs:
           cp -r "$APP" build/Payload/
           cd build && zip -r ../dailytrace.ipa Payload && cd ..
           echo "生成 IPA: $(pwd)/dailytrace.ipa"
+
+      - name: 校验 JS 包已打入（防止白屏）
+        run: |
+          cd ios
+          APP=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n1)
+          if ! ls "$APP"/*.jsbundle >/dev/null 2>&1; then
+            echo "ERROR: JS bundle (*.jsbundle) 未嵌入 App，会导致白屏！"
+            exit 1
+          fi
+          echo "JS bundle 已正确嵌入: $(ls "$APP"/*.jsbundle)"
 
       - name: 上传 IPA 作为构建产物（在 Actions 运行页的 Artifacts 下载）
         uses: actions/upload-artifact@v4
