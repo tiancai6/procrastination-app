@@ -230,7 +230,10 @@ const TimerCard: React.FC = () => {
               showsVerticalScrollIndicator={false}
             >
               <Text style={styles.modalTitle}>这次专注做了什么？</Text>
-              <Text style={styles.modalSubtitle}>时长 {formatDuration(durationRef.current)}</Text>
+              <Text style={styles.modalSubtitle}>
+                时长 {formatDuration(durationRef.current)}
+                {durationRef.current <= 0 ? '（不足 1 分钟，无法保存，可点「不保存」直接结束）' : ''}
+              </Text>
 
               <View style={styles.inputSection}>
                 <Text style={styles.sectionLabel}>分类</Text>
@@ -432,8 +435,12 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
     overflow: 'hidden',
   },
+  // 注意：父容器 modalContent 只有 maxHeight、没有固定高度，
+  // 这里若写 flex:1 会让 Yoga 把弹窗高度算成 0（只剩灰色遮罩、点不到按钮）。
+  // 必须用 flexGrow:0 + flexShrink:1：高度由内容撑开，超出 maxHeight 时再收缩滚动。
   modalScroll: {
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 1,
   },
   modalScrollContent: {
     padding: 24,

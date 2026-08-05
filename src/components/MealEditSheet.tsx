@@ -20,6 +20,7 @@ import {
   updateMealEntry,
   deleteMealEntry,
   estimateMealNutrition,
+  getMealsByDate,
 } from '../utils/nutrition';
 import { generateId, getApiKey } from '../utils/storage';
 import CalendarPicker, { WEEK_LABELS } from './CalendarPicker';
@@ -62,7 +63,17 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [estimating, setEstimating] = useState(false);
 
-  const isEditing = !!entry;
+  // 当前真正在编辑的那条记录。切换餐次时会跟着换成那一餐的已有记录，
+  // 所以不能直接用 props.entry 判断编辑态。
+  const [activeEntry, setActiveEntry] = useState<MealEntry | null>(null);
+  // 所选日期当天的全部餐记录，用于「点餐次 → 显示那一餐的记录」
+  const [dayMeals, setDayMeals] = useState<MealEntry[]>([]);
+  // 切换餐次/日期后的一行说明，避免用户不知道内容为什么变了
+  const [switchHint, setSwitchHint] = useState('');
+  // 内容改过但营养还是旧的 → 提醒重新估算
+  const [nutritionStale, setNutritionStale] = useState(false);
+
+  const isEditing = !!activeEntry;
 
   // 键盘高度监听：弹窗抬到键盘上方并压缩可视高度，内容框始终可见
   const { height: screenHeight } = useWindowDimensions();
@@ -86,16 +97,79 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
       setDateStr(entry.date);
       setContent(entry.content);
       setNutrition(entry.nutrition ?? null);
+      setActiveEntry(entry);
     } else {
       setType('breakfast');
       setDateStr(toDateStr(new Date()));
       setContent('');
       setNutrition(null);
+      setActiveEntry(null);
     }
+    setSwitchHint('');
+    setNutritionStale(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, entry]);
 
+  // 拉取所选日期当天的全部记录：切餐次时才知道那一餐有没有已存在的记录
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    (async () => {
+      const list = await getMealsByDate(dateStr);
+      if (alive) setDayMeals(list);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [visible, dateStr]);
+
   if (!visible) return null;
+
+  const labelOf = (t: MealType) => MEAL_TYPE_OPTIONS.find((o) => o.value === t)?.label || '';
+
+  // 点餐次：当天该餐次已有记录 → 直接切过去编辑那条；没有 → 视为把当前这条改成该餐次
+  const pickType = (t: MealType) => {
+    if (t === type) return;
+    const found = dayMeals
+      .filter((m) => m.type === t && m.id !== activeEntry?.id)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (found.length > 0) {
+      const target = found[0];
+      setType(t);
+      setActiveEntry(target);
+      setContent(target.content);
+      setNutrition(target.nutrition ?? null);
+      setNutritionStale(false);
+      setSwitchHint(
+        found.length > 1
+          ? `已切到当天的${labelOf(t)}记录（共 ${found.length} 条，正在编辑最早的一条）`
+          : `已切到当天的${labelOf(t)}记录`,
+      );
+    } else {
+      setType(t);
+      setSwitchHint(
+        activeEntry
+          ? `这天还没有${labelOf(t)}记录，保存后这条会变成${labelOf(t)}`
+          : `这天还没有${labelOf(t)}记录，保存后会新建一条`,
+      );
+    }
+  };
+
+  // 改日期：不打断当前编辑，但若目标日期同餐次已有记录，提前告知保存会覆盖
+  const pickDate = (d: Date) => {
+    const next = toDateStr(d);
+    setDateStr(next);
+    if (next !== (activeEntry?.date ?? next)) {
+      setSwitchHint(`已改为 ${fmtDate(next)}，保存后这条记录会移到该日期`);
+    } else {
+      setSwitchHint('');
+    }
+  };
+
+  const onChangeContent = (v: string) => {
+    setContent(v);
+    if (nutrition && v.trim() !== (activeEntry?.content ?? '').trim()) setNutritionStale(true);
+  };
 
   const doEstimate = async () => {
     const text = content.trim();
@@ -110,19 +184,20 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
     }
     setEstimating(true);
     const tempEntry: MealEntry = {
-      id: entry?.id || 'tmp',
+      id: activeEntry?.id || 'tmp',
       type,
       content: text,
       date: dateStr,
-      createdAt: entry?.createdAt || Date.now(),
+      createdAt: activeEntry?.createdAt || Date.now(),
     };
     const { result, status } = await estimateMealNutrition(tempEntry);
     setEstimating(false);
     if (status === 'ok' && result) {
       setNutrition(result);
+      setNutritionStale(false);
       // 编辑模式下立即把估算结果落库，体验更顺畅；新建模式在保存时一并写入
-      if (entry) {
-        await updateMealEntry({ ...entry, nutrition: result });
+      if (activeEntry) {
+        await updateMealEntry({ ...activeEntry, type, date: dateStr, content: text, nutrition: result });
         onSaved?.();
       }
     } else if (status === 'nokey') {
@@ -141,12 +216,19 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
       return;
     }
     const now = Date.now();
+    // 早/午/晚按「日期+餐次」占唯一槽位，id 固定为 `${date}_${type}`。
+    // 改了餐次或日期时要迁移到新 id，并把原来那条删掉，避免 id 与内容对不上。
+    const isMain = type !== 'snack';
+    const targetId = isMain ? `${dateStr}_${type}` : activeEntry?.id || generateId();
+    if (activeEntry && activeEntry.id !== targetId) {
+      await deleteMealEntry(activeEntry.id);
+    }
     const built: MealEntry = {
-      id: entry?.id || generateId(),
+      id: targetId,
       type,
       content: text,
       date: dateStr,
-      createdAt: entry?.createdAt || now,
+      createdAt: activeEntry?.createdAt || now,
       nutrition: nutrition ?? undefined,
     };
     await updateMealEntry(built);
@@ -155,13 +237,14 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
   };
 
   const doDelete = () => {
+    if (!activeEntry) return;
     Alert.alert('删除记录', '确定删除这条三餐记录吗？此操作不可撤销。', [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          await deleteMealEntry(entry!.id);
+          await deleteMealEntry(activeEntry.id);
           onSaved?.();
           onClose();
         },
@@ -201,18 +284,23 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
             {/* 餐次 chips */}
             <Text style={styles.fieldLabel}>餐次</Text>
             <View style={styles.catWrap}>
-              {MEAL_TYPE_OPTIONS.map((c) => (
-                <TouchableOpacity
-                  key={c.value}
-                  style={[styles.catChip, type === c.value && styles.catChipActive]}
-                  onPress={() => setType(c.value)}
-                >
-                  <Text style={[styles.catChipText, type === c.value && styles.catChipTextActive]}>
-                    {c.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              {MEAL_TYPE_OPTIONS.map((c) => {
+                const has = dayMeals.some((m) => m.type === c.value);
+                return (
+                  <TouchableOpacity
+                    key={c.value}
+                    style={[styles.catChip, type === c.value && styles.catChipActive]}
+                    onPress={() => pickType(c.value)}
+                  >
+                    <Text style={[styles.catChipText, type === c.value && styles.catChipTextActive]}>
+                      {c.label}
+                    </Text>
+                    {has && <View style={[styles.catDot, type === c.value && styles.catDotActive]} />}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
+            {switchHint ? <Text style={styles.switchHint}>{switchHint}</Text> : null}
 
             {/* 日期 */}
             <Text style={styles.fieldLabel}>日期</Text>
@@ -229,10 +317,13 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
               placeholder="如：鸡蛋 2个、全麦面包 1片、牛奶 1杯"
               placeholderTextColor={COLORS.textLighter}
               value={content}
-              onChangeText={setContent}
+              onChangeText={onChangeContent}
               maxLength={100}
               multiline
             />
+            {nutritionStale ? (
+              <Text style={styles.staleHint}>内容改过了，下面的营养还是旧的，建议点「AI 重新估算营养」</Text>
+            ) : null}
 
             {/* 营养估算 */}
             <View style={styles.estimateWrap}>
@@ -278,7 +369,7 @@ const MealEditSheet: React.FC<Props> = ({ visible, onClose, onSaved, entry }) =>
         value={new Date(dateStr + 'T00:00:00')}
         mode="date"
         title="选择日期"
-        onConfirm={(d) => setDateStr(toDateStr(d))}
+        onConfirm={pickDate}
         onClose={() => setShowDatePicker(false)}
       />
     </Modal>
@@ -369,6 +460,32 @@ const styles = StyleSheet.create({
   },
   catChipTextActive: {
     color: '#fff',
+  },
+  // 餐次 chip 右上角的小圆点：表示该餐次当天已有记录
+  catDot: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
+  },
+  catDotActive: {
+    backgroundColor: '#fff',
+  },
+  // 切换餐次/日期后的一行说明
+  switchHint: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  // 内容改过但营养还是旧值时的提醒
+  staleHint: {
+    fontSize: 12,
+    color: '#F59E0B',
+    marginTop: 6,
   },
   dateRow: {
     flexDirection: 'row',
