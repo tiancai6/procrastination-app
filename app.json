@@ -36,7 +36,6 @@
     ],
     "scheme": "dailytrace",
     "extra": {
-      "router": {},
       "eas": {
         "projectId": "7c582744-933c-4b84-b7bd-4632f0685461"
       }
