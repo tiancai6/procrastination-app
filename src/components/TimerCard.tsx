@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ImageBackground, Keyboard, Dimensions, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ImageBackground, Keyboard, Dimensions, ScrollView, AppState } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -21,7 +21,7 @@ type RootStackParamList = {
 
 const TimerCard: React.FC = () => {
   const navigation = useNavigation<{ navigate: (screen: keyof RootStackParamList) => void }>();
-  const { isRunning, startTimer, stopTimer, updateDuration } = useTimerStore();
+  const { isRunning, startTime, startTimer, stopTimer } = useTimerStore();
   const { stats, addSession } = useSessionStore();
   const [displayDuration, setDisplayDuration] = useState(0);
   const [showEndModal, setShowEndModal] = useState(false);
@@ -97,19 +97,25 @@ const TimerCard: React.FC = () => {
     ]);
   };
 
+  // 时间戳法计时：显示时长 = 真实当前时间 - 开始时间，不靠累加。
+  // 这样 App 退后台/息屏被系统挂起时不会漏算，回来即正确。
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (isRunning) {
-      interval = setInterval(() => {
-        const newDuration = durationRef.current + 1;
-        setDisplayDuration(newDuration);
-        updateDuration(newDuration);
-      }, 60000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRunning]);
+    if (!isRunning || !startTime) return;
+    const tick = () => setDisplayDuration(Math.floor((Date.now() - startTime) / 60000));
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [isRunning, startTime]);
+
+  // 从后台/息屏回到前台时立即校正一次，避免最多等 1 秒才刷新
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && isRunning && startTime) {
+        setDisplayDuration(Math.floor((Date.now() - startTime) / 60000));
+      }
+    });
+    return () => sub.remove();
+  }, [isRunning, startTime]);
 
   const handleStart = () => {
     setDisplayDuration(0);
@@ -121,10 +127,12 @@ const TimerCard: React.FC = () => {
   };
 
   const confirmEnd = async () => {
-    const duration = durationRef.current;
+    const begin = startTime;
+    if (!begin) return;
+    const duration = Math.floor((Date.now() - begin) / 60000);
     const session = {
       id: generateId(),
-      startTime: Date.now() - duration * 60000,
+      startTime: begin,
       endTime: Date.now(),
       duration,
       category: selectedCategory,
