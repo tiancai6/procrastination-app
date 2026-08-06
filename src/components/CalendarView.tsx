@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { Reminder, Habit, HabitCheckin } from '../types';
@@ -102,6 +102,17 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
     return cells;
   }, [selWeek]);
 
+  const weekTitle = useMemo(() => {
+    if (weekCells.length < 7) return '';
+    const a = weekCells[0];
+    const b = weekCells[6];
+    const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
+    if (a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) {
+      return `${a.getFullYear()}年${a.getMonth() + 1}月`;
+    }
+    return `${fmt(a)} – ${fmt(b)}`;
+  }, [weekCells]);
+
   const shiftMonth = (delta: number) => {
     setCursor((c) => new Date(c.getFullYear(), c.getMonth() + delta, 1));
   };
@@ -117,7 +128,8 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
     const a = aggMap.get(s);
     if (!a) return null;
     const dots: React.ReactNode[] = [];
-    if (a.doneTodos > 0 || a.pendingTodos > 0) dots.push(<View key="b" style={[styles.dot, { backgroundColor: COLORS.primary }]} />);
+    if (a.pendingTodos > 0) dots.push(<View key="b" style={[styles.dot, { backgroundColor: COLORS.primary }]} />);
+    if (a.doneTodos > 0) dots.push(<View key="d" style={[styles.dot, { backgroundColor: COLORS.textLighter }]} />);
     if (a.checkins > 0) dots.push(<View key="g" style={[styles.dot, { backgroundColor: COLORS.success }]} />);
     if (a.missed > 0) dots.push(<View key="r" style={[styles.dot, { backgroundColor: COLORS.danger }]} />);
     if (!dots.length) return null;
@@ -171,7 +183,7 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
           <Text style={styles.navTitle}>
             {mode === 'month'
               ? `${cursor.getFullYear()}年${cursor.getMonth() + 1}月`
-              : `${selWeek.getFullYear()}年${selWeek.getMonth() + 1}月`}
+              : weekTitle}
           </Text>
           <TouchableOpacity onPress={() => (mode === 'month' ? shiftMonth(1) : shiftWeek(1))}>
             <Ionicons name="chevron-forward" size={22} color={COLORS.textLight} />
@@ -205,18 +217,17 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
           ))}
         </View>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
-          <View style={styles.weekRow}>
-            {weekCells.map((d, i) => (
-              <DayCell key={i} d={d} selectedCell={toDateStr(d) === selected} />
-            ))}
-          </View>
-        </ScrollView>
+        <View style={styles.weekRow}>
+          {weekCells.map((d, i) => (
+            <DayCell key={i} d={d} selectedCell={toDateStr(d) === selected} />
+          ))}
+        </View>
       )}
 
       {/* 图例 */}
       <View style={styles.legend}>
-        <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: COLORS.primary }]} /><Text style={styles.legendText}>待办</Text></View>
+        <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: COLORS.primary }]} /><Text style={styles.legendText}>未完成</Text></View>
+        <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: COLORS.textLighter }]} /><Text style={styles.legendText}>已完成</Text></View>
         <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: COLORS.success }]} /><Text style={styles.legendText}>打卡</Text></View>
         <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: COLORS.danger }]} /><Text style={styles.legendText}>漏打卡</Text></View>
       </View>
@@ -296,9 +307,8 @@ const styles = StyleSheet.create({
   cellNumToday: { color: COLORS.primary, fontWeight: '600' },
   dotRow: { flexDirection: 'row', gap: 3, marginTop: 2 },
   dot: { width: 5, height: 5, borderRadius: 2.5 },
-  weekScroll: { maxHeight: 72 },
-  weekRow: { flexDirection: 'row' },
-  legend: { flexDirection: 'row', gap: 16, justifyContent: 'center', paddingVertical: 8 },
+  weekRow: { flexDirection: 'row', width: '100%' },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center', paddingVertical: 8 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   legendText: { fontSize: 12, color: COLORS.textLight },
   detail: {
