@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { GLM_ENDPOINT } from './ai';
-import { getApiKey, getModel, getVisionModel } from './storage';
+import { getActiveConfig } from './modelConfig';
+import { postChat, postChatStream } from './model';
 
 export interface ChatMessage {
   id: string;
@@ -118,26 +118,15 @@ export const COMPRESS_KEEP_RECENT = 6;
 export const estimateChars = (messages: ChatMessage[], summary = ''): number =>
   messages.reduce((sum, m) => sum + (m.content?.length || 0), 0) + summary.length;
 
-const buildHeaders = (apiKey: string) => ({
-  'Content-Type': 'application/json',
-  Accept: 'application/json',
-  Authorization: `Bearer ${apiKey}`,
-});
-
-// 多轮对话：把消息数组直接发给 GLM。systemContext 作为 system 角色注入（不计入可见聊天）。
+// 多轮对话：把消息数组直接发给当前默认模型。systemContext 作为 system 角色注入（不计入可见聊天）。
 // 用户消息可携带 images（沙盒文件 uri 数组）；若有图片且当前模型不支持视觉，自动切换到 VISION_MODEL。
 export const sendChat = async (
   messages: ChatMessage[],
   systemContext?: string,
 ): Promise<string> => {
-  const apiKey = await getApiKey();
-  if (!apiKey) throw new Error('未设置 API Key，请先到「我的」页面填写');
-
-  const model0 = await getModel();
   const hasImages = messages.some((m) => m.role === 'user' && m.images && m.images.length > 0);
-  // 文本用用户设置的默认模型；带图片时改用独立的「视觉模型」（与文本模型分开设置，互不影响）
-  const visionModel = await getVisionModel();
-  const model = hasImages ? visionModel : model0;
+  const cfg = await getActiveConfig(hasImages);
+  if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
 
   type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
   const payload: { role: string; content: string | ContentPart[] }[] = [];
@@ -165,26 +154,7 @@ export const sendChat = async (
     }
   }
 
-  const res = await fetch(GLM_ENDPOINT, {
-    method: 'POST',
-    headers: buildHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      messages: payload,
-      temperature: 0.7,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      stream: false,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('[Chat] GLM send failed', res.status, errText);
-    throw new Error(`GLM 请求失败（${res.status}），请检查网络或 API Key`);
-  }
-  const data = await res.json();
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('GLM 返回为空');
+  const content = await postChat(cfg, payload, { maxTokens: MAX_OUTPUT_TOKENS });
   return content;
 };
 
@@ -201,9 +171,8 @@ export const compressChat = async (
   existingMd: string,
   oldMessages: ChatMessage[],
 ): Promise<string> => {
-  const apiKey = await getApiKey();
-  const model = await getModel();
-  if (!apiKey) throw new Error('未设置 API Key，请先到「我的」页面填写');
+  const cfg = await getActiveConfig(false);
+  if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
 
   const conversationText = oldMessages
     .map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.content}`)
@@ -211,30 +180,14 @@ export const compressChat = async (
 
   const userPrompt = `现有摘要：\n${existingMd || '(无)'}\n\n待压缩对话：\n${conversationText}\n\n请输出更新后的摘要 markdown。`;
 
-  const res = await fetch(GLM_ENDPOINT, {
-    method: 'POST',
-    headers: buildHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: COMPRESS_SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.3,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      stream: false,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('[Chat] GLM compress failed', res.status, errText);
-    throw new Error(`压缩失败（${res.status}）`);
-  }
-  const data = await res.json();
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('压缩结果为空');
-  return content;
+  return await postChat(
+    cfg,
+    [
+      { role: 'system', content: COMPRESS_SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt },
+    ],
+    { temperature: 0.3, maxTokens: 4096 },
+  );
 };
 
 // ============ 重新生成（兜底）============
@@ -247,33 +200,63 @@ const REBUILD_SYSTEM_PROMPT = (today: string) => `你是个人档案整理器。
 4. 直接输出 markdown，不要输出任何额外说明文字。`;
 
 export const rebuildSummary = async (md: string): Promise<string> => {
-  const apiKey = await getApiKey();
-  if (!apiKey) throw new Error('未设置 API Key，请先到「我的」页面填写');
-  const model = await getModel();
+  const cfg = await getActiveConfig(false);
+  if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
   const today = new Date().toISOString().slice(0, 10);
 
-  const res = await fetch(GLM_ENDPOINT, {
-    method: 'POST',
-    headers: buildHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: REBUILD_SYSTEM_PROMPT(today) },
-        { role: 'user', content: md },
-      ],
-      temperature: 0.3,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      stream: false,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('[Chat] GLM rebuild failed', res.status, errText);
-    throw new Error(`重新生成失败（${res.status}）`);
-  }
-  const data = await res.json();
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('重新生成为空');
-  return content;
+  return await postChat(
+    cfg,
+    [
+      { role: 'system', content: REBUILD_SYSTEM_PROMPT(today) },
+      { role: 'user', content: md },
+    ],
+    { temperature: 0.3, maxTokens: 4096 },
+  );
 };
+
+// ============ 流式对话（SSE）============
+// 与 sendChat 的区别：stream:true，逐 token 通过 onToken 回调吐出，体感更快。
+// ⚠️ React Native 的 fetch 不支持 response.body 流式读取，故用 XMLHttpRequest 的
+//    增量 responseText 解析 SSE（data:{...} 行），中文由 XHR 自动按 UTF-8 解码。
+// 返回 Promise<string> 为完整文本（供调用方落库）。signal 可传 AbortSignal 取消。
+export const sendChatStream = (
+  messages: ChatMessage[],
+  systemContext?: string,
+  onToken?: (delta: string) => void,
+  signal?: AbortSignal,
+  forceSearch = false,
+): Promise<string> =>
+  new Promise<string>((resolve, reject) => {
+    (async () => {
+      const hasImages = messages.some((m) => m.role === 'user' && m.images && m.images.length > 0);
+      const cfg = await getActiveConfig(hasImages);
+      if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
+
+      type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+      const payload: { role: string; content: string | ContentPart[] }[] = [];
+      if (systemContext) payload.push({ role: 'system', content: systemContext });
+      for (const m of messages) {
+        if (m.role === 'assistant') {
+          payload.push({ role: 'assistant', content: m.content });
+          continue;
+        }
+        if (m.images && m.images.length > 0) {
+          const parts: ContentPart[] = [];
+          if (m.content && m.content.trim()) parts.push({ type: 'text', text: m.content });
+          for (const uri of m.images) {
+            try {
+              const dataUrl = await readChatImageBase64(uri);
+              parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+            } catch (e) {
+              console.error('[chat] 读取图片失败，跳过该图', uri, e);
+            }
+          }
+          payload.push({ role: 'user', content: parts });
+        } else {
+          payload.push({ role: 'user', content: m.content });
+        }
+      }
+
+      postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch }).then(resolve, reject);
+    })().catch(reject);
+  });

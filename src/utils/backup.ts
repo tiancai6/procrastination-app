@@ -35,6 +35,25 @@ const countRecords = (raw: string | null | undefined): number => {
   }
 };
 
+// 真正属于「用户记录」的 key（不含分类、缓存、设置项），用于统计备份/恢复的总条数
+const RECORD_KEYS = [
+  'timer_sessions',
+  'procrastination_task_plans',
+  'procrastination_plans',
+  'procrastination_checkin_records',
+  'procrastination_reward_records',
+  'quick_memos',
+  'chat_messages',
+  'reminders',
+  'habits',
+  'habit_checkins',
+  'ledger_entries',
+  'meal_entries',
+];
+
+const countAllRecords = (data: Record<string, string | null | undefined>): number =>
+  RECORD_KEYS.reduce((sum, key) => sum + countRecords(data[key]), 0);
+
 // 收集所有随手记媒体文件，base64 内联进备份（与文本一起走现有分享流程）
 const collectMemoMedia = async (): Promise<Record<string, Record<string, string>>> => {
   const out: Record<string, Record<string, string>> = {};
@@ -172,6 +191,73 @@ const restoreChatImages = async (images: Record<string, string>): Promise<void> 
   }
 };
 
+// 导入后把聊天记录里的图片路径改写成「当前沙盒」的路径。
+// 原因：chat_messages 里的 images 存的是完整绝对路径（file:///var/mobile/.../<UUID>/Documents/chat_images/xxx.jpg），
+// 而 iOS 每次重装 App，沙盒目录里的 UUID 都会变。若不改写，图片文件虽已恢复，
+// 聊天里却因为指向旧路径而全部显示不出来。这里按文件名重新拼当前目录。
+const rewriteChatImagePaths = async (): Promise<void> => {
+  try {
+    const raw = await AsyncStorage.getItem('chat_messages');
+    if (!raw) return;
+    const messages: unknown = JSON.parse(raw);
+    if (!Array.isArray(messages)) return;
+
+    let changed = false;
+    for (const msg of messages) {
+      if (!msg || typeof msg !== 'object') continue;
+      const images = (msg as { images?: unknown }).images;
+      if (!Array.isArray(images)) continue;
+      (msg as { images: string[] }).images = images.map((uri) => {
+        if (typeof uri !== 'string') return uri;
+        const name = uri.split('/').pop();
+        if (!name) return uri;
+        const next = `${CHAT_IMG_DIR}${name}`;
+        if (next !== uri) changed = true;
+        return next;
+      });
+    }
+
+    if (changed) {
+      await AsyncStorage.setItem('chat_messages', JSON.stringify(messages));
+    }
+  } catch (e) {
+    console.error('rewriteChatImagePaths failed', e);
+  }
+};
+
+// 导入后把随手记里可能残留的绝对路径改写成相对文件名。
+// 正常存的是文件名（memoMedia.copyMediaToMemo 返回文件名），这里只做兜底，
+// 兼容早期版本或手改过的备份文件。
+const normalizeMemoMediaFiles = async (): Promise<void> => {
+  try {
+    const raw = await AsyncStorage.getItem('quick_memos');
+    if (!raw) return;
+    const memos: unknown = JSON.parse(raw);
+    if (!Array.isArray(memos)) return;
+
+    let changed = false;
+    for (const memo of memos) {
+      if (!memo || typeof memo !== 'object') continue;
+      const media = (memo as { media?: unknown }).media;
+      if (!Array.isArray(media)) continue;
+      for (const item of media) {
+        if (!item || typeof item !== 'object') continue;
+        const file = (item as { file?: unknown }).file;
+        if (typeof file === 'string' && file.includes('/')) {
+          (item as { file: string }).file = file.split('/').pop() as string;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      await AsyncStorage.setItem('quick_memos', JSON.stringify(memos));
+    }
+  } catch (e) {
+    console.error('normalizeMemoMediaFiles failed', e);
+  }
+};
+
 export const exportBackup = async (): Promise<{ recordCount: number; fileName: string; fileSizeKB: number }> => {
   const entries = await AsyncStorage.multiGet(ALL_DATA_KEYS);
   const data: Record<string, string | null> = {};
@@ -221,7 +307,7 @@ export const exportBackup = async (): Promise<{ recordCount: number; fileName: s
   }
 
   return {
-    recordCount: countRecords(data['timer_sessions']),
+    recordCount: countAllRecords(data),
     fileName,
     fileSizeKB,
   };
@@ -290,9 +376,6 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
     await restoreChatImages(backup.chatImages);
   }
 
-  // 通知所有已挂载页面重新拉取，保证导入后首页/统计等同步显示新数据
-  emitDataReset();
-
   // 恢复头像图片文件，并把新路径写回 AsyncStorage（旧路径在旧 App 沙盒已失效）
   if (backup.profileImageFile) {
     const newUri = await restoreProfileImageFile(backup.profileImageFile);
@@ -309,8 +392,15 @@ export const importBackup = async (): Promise<{ recordCount: number; fileSizeKB:
     }
   }
 
+  // 把聊天图片的绝对路径改写到当前沙盒；随手记媒体做相对文件名兜底
+  await rewriteChatImagePaths();
+  await normalizeMemoMediaFiles();
+
+  // 全部文件与路径都处理完后，再通知页面重新拉取，避免读到半成品状态
+  emitDataReset();
+
   return {
-    recordCount: countRecords(backup.data['timer_sessions']),
+    recordCount: countAllRecords(backup.data),
     fileSizeKB,
   };
 };

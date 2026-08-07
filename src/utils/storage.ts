@@ -7,6 +7,7 @@ import type { ChatMessage, ChatMeta } from './chat';
 import { autoBackup } from './autoBackup';
 import { emitDataReset } from './appEvents';
 import { ALL_DATA_KEYS } from './keys';
+import { getDefaultModel, getDefaultVisionModelCfg } from './modelConfig';
 
 // YYYY-MM-DD（本地时区）
 export const toDateStr = (d: Date): string => {
@@ -479,7 +480,7 @@ export const setApiKey = async (key: string): Promise<void> => {
 
 export const getApiKey = async (): Promise<string | null> => {
   try {
-    return await AsyncStorage.getItem(AI_API_KEY);
+    return (await getDefaultModel())?.apiKey || null;
   } catch (error) {
     console.error('Failed to get API key:', error);
     return null;
@@ -497,7 +498,7 @@ export const setModel = async (model: string): Promise<void> => {
 
 export const getModel = async (): Promise<string> => {
   try {
-    return (await AsyncStorage.getItem(AI_MODEL)) || DEFAULT_AI_MODEL;
+    return (await getDefaultModel())?.modelId || DEFAULT_AI_MODEL;
   } catch (error) {
     console.error('Failed to get model:', error);
     return DEFAULT_AI_MODEL;
@@ -519,7 +520,7 @@ export const setVisionModel = async (model: string): Promise<void> => {
 
 export const getVisionModel = async (): Promise<string> => {
   try {
-    return (await AsyncStorage.getItem(AI_VISION_MODEL)) || DEFAULT_VISION_MODEL;
+    return (await getDefaultVisionModelCfg())?.modelId || DEFAULT_VISION_MODEL;
   } catch (error) {
     console.error('Failed to get vision model:', error);
     return DEFAULT_VISION_MODEL;
@@ -912,6 +913,149 @@ export const setLedgerCategories = async (type: LedgerType, list: string[]): Pro
     autoBackup();
   } catch (error) {
     console.error('Failed to set ledger categories:', error);
+  }
+};
+
+// ============ 身体信息 & 每日活动量（运动量 TDEE 用）============
+// 单一 key 存「按日期」的 map，便于纳入 ALL_DATA_KEYS 与自动备份。
+const BODY_PROFILE_KEY = 'body_profile';
+const DAILY_ACTIVITY_KEY = 'daily_activity';
+
+export interface BodyProfile {
+  gender: 'male' | 'female';
+  age: number;
+  height: number; // cm
+  weight: number; // kg
+}
+export interface ExerciseRecord {
+  id: string;
+  type: string; // 跑步/力量/游泳/骑行/瑜伽/其他
+  durationMin: number;
+  kcal?: number; // AI 或手动估算的消耗
+  note?: string;
+}
+export interface DailyActivity {
+  baseLevel: 'sedentary' | 'light' | 'moderate' | 'high'; // 久坐/轻度/中度/高强度
+  exercises: ExerciseRecord[];
+}
+
+export const getBodyProfile = async (): Promise<BodyProfile | null> => {
+  try {
+    const raw = await AsyncStorage.getItem(BODY_PROFILE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.error('Failed to get body profile:', error);
+    return null;
+  }
+};
+
+export const setBodyProfile = async (p: BodyProfile): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(BODY_PROFILE_KEY, JSON.stringify(p));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save body profile:', error);
+  }
+};
+
+export const getDailyActivity = async (date: string): Promise<DailyActivity> => {
+  try {
+    const raw = await AsyncStorage.getItem(DAILY_ACTIVITY_KEY);
+    const all: Record<string, DailyActivity> = raw ? JSON.parse(raw) : {};
+    return all[date] || { baseLevel: 'sedentary', exercises: [] };
+  } catch (error) {
+    console.error('Failed to get daily activity:', error);
+    return { baseLevel: 'sedentary', exercises: [] };
+  }
+};
+
+export const getAllDailyActivity = async (): Promise<Record<string, DailyActivity>> => {
+  try {
+    const raw = await AsyncStorage.getItem(DAILY_ACTIVITY_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (error) {
+    console.error('Failed to get all daily activity:', error);
+    return {};
+  }
+};
+
+export const setDailyActivity = async (date: string, activity: DailyActivity): Promise<void> => {
+  try {
+    const raw = await AsyncStorage.getItem(DAILY_ACTIVITY_KEY);
+    const all: Record<string, DailyActivity> = raw ? JSON.parse(raw) : {};
+    all[date] = activity;
+    await AsyncStorage.setItem(DAILY_ACTIVITY_KEY, JSON.stringify(all));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save daily activity:', error);
+  }
+};
+
+// ============ 手环/健康数据（华为运动健康等导出后手动导入）============
+// 同样用单一 key 存「按日期」的 map，方便备份与清除。
+const HEALTH_DAILY_KEY = 'health_daily';
+
+export interface HealthDaily {
+  date: string; // YYYY-MM-DD
+  steps?: number;
+  distanceKm?: number;
+  activeKcal?: number; // 手环记录的活动消耗
+  sleepMin?: number; // 睡眠时长（分钟）
+  restingHr?: number; // 静息心率
+  source?: string; // 来源：huawei / manual
+}
+
+export const getAllHealthDaily = async (): Promise<Record<string, HealthDaily>> => {
+  try {
+    const raw = await AsyncStorage.getItem(HEALTH_DAILY_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (error) {
+    console.error('Failed to get health daily:', error);
+    return {};
+  }
+};
+
+export const getHealthDaily = async (date: string): Promise<HealthDaily | null> => {
+  const all = await getAllHealthDaily();
+  return all[date] || null;
+};
+
+export const setHealthDaily = async (date: string, data: HealthDaily): Promise<void> => {
+  try {
+    const all = await getAllHealthDaily();
+    all[date] = { ...(all[date] || {}), ...data, date };
+    await AsyncStorage.setItem(HEALTH_DAILY_KEY, JSON.stringify(all));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save health daily:', error);
+  }
+};
+
+// 批量合并导入（同一天已有字段不被 undefined 覆盖）
+export const mergeHealthDaily = async (list: HealthDaily[]): Promise<number> => {
+  try {
+    const all = await getAllHealthDaily();
+    let n = 0;
+    list.forEach((item) => {
+      if (!item.date) return;
+      const prev = all[item.date] || { date: item.date };
+      const next: HealthDaily = { ...prev };
+      (Object.keys(item) as (keyof HealthDaily)[]).forEach((k) => {
+        const v = item[k];
+        if (v !== undefined && v !== null && !Number.isNaN(v as number)) {
+          // @ts-expect-error 动态赋值，字段类型一致
+          next[k] = v;
+        }
+      });
+      all[item.date] = next;
+      n += 1;
+    });
+    await AsyncStorage.setItem(HEALTH_DAILY_KEY, JSON.stringify(all));
+    autoBackup();
+    return n;
+  } catch (error) {
+    console.error('Failed to merge health daily:', error);
+    return 0;
   }
 };
 

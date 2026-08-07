@@ -8,6 +8,8 @@ import { TOP_INSET } from '../constants/safeArea';
 import { clearAllData, saveProfileImage, getProfileImage, getApiKey, setApiKey, getModel, setModel, getVisionModel, setVisionModel } from '../utils/storage';
 import { importBackup } from '../utils/backup';
 import { doManualExport } from '../utils/autoBackup';
+import ModelConfigPage from './ModelConfigPage';
+import { getModelConfigs } from '../utils/modelConfig';
 
 const SettingsPage: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState(false);
@@ -21,6 +23,8 @@ const SettingsPage: React.FC = () => {
   const [aiModelInput, setAiModelInput] = useState('glm-4-flash');
   const [visionModelInput, setVisionModelInput] = useState('glm-4v-flash');
   const [aiEnabled, setAiEnabled] = useState(false);
+  const [showModelCfg, setShowModelCfg] = useState(false);
+  const [modelCount, setModelCount] = useState(0);
 
   useEffect(() => {
     loadProfile();
@@ -31,7 +35,10 @@ const SettingsPage: React.FC = () => {
     if (image) {
       setAvatarImage(image);
     }
+    setModelCount((await getModelConfigs()).length);
   };
+
+  const refreshModelCount = async () => setModelCount((await getModelConfigs()).length);
 
   const pickAvatar = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -146,9 +153,9 @@ const SettingsPage: React.FC = () => {
     },
     { 
       icon: <Ionicons name="sparkles-outline" size={20} color={COLORS.primary} />, 
-      label: 'AI 智能分析', 
-      description: aiEnabled ? '已开启 · GLM-4-Flash' : '填入 API Key 开启',
-      action: openAIModal,
+      label: '管理 AI 模型', 
+      description: modelCount > 0 ? `已配置 ${modelCount} 个模型` : '添加 GLM / 豆包 / DeepSeek / Gemini',
+      action: () => setShowModelCfg(true),
     },
     { 
       icon: <Ionicons name="share-outline" size={20} color={COLORS.primary} />, 
@@ -300,80 +307,7 @@ const SettingsPage: React.FC = () => {
         </View>
       </Modal>
 
-      <Modal
-        visible={showAIModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowAIModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>AI 智能分析</Text>
-            <Text style={styles.modalDescription}>
-              粘贴你的 GLM API Key（在智谱开放平台 open.bigmodel.cn 获取，glm-4-flash 免费）。开启后，仅会把匿名统计摘要发送给 AI 生成洞察，原始记录不会上传。
-            </Text>
-
-            <TextInput
-              style={styles.input}
-              placeholder="粘贴 GLM API Key（形如 glm-...）"
-              value={apiKeyInput}
-              onChangeText={setApiKeyInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <Text style={styles.modalDescription}>文本模型（默认 glm-4-flash，纯文本对话使用）</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="glm-4-flash"
-              value={aiModelInput}
-              onChangeText={setAiModelInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <Text style={styles.modalDescription}>图片识别模型（视觉模型，默认 glm-4v-flash，发送图片时单独使用，与上面的文本模型互不影响）</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="glm-4v-flash"
-              value={visionModelInput}
-              onChangeText={setVisionModelInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => setShowAIModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.confirmButton}
-                onPress={saveAISettings}
-              >
-                <Text style={styles.confirmButtonText}>保存</Text>
-              </TouchableOpacity>
-            </View>
-
-            {aiEnabled && (
-              <TouchableOpacity
-                style={styles.aiClearKey}
-                onPress={async () => {
-                  await setApiKey('');
-                  setApiKeyInput('');
-                  setAiEnabled(false);
-                  setShowAIModal(false);
-                  Alert.alert('已关闭', '已清除 API Key 并关闭 AI 分析');
-                }}
-              >
-                <Text style={styles.aiClearKeyText}>清除 Key 并关闭 AI</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      </Modal>
+      <ModelConfigPage visible={showModelCfg} onClose={() => { setShowModelCfg(false); refreshModelCount(); }} />
 
       <Modal
         visible={showAboutModal}

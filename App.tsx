@@ -11,6 +11,7 @@ import QuickMemoPage from './src/pages/QuickMemoPage';
 import ChatPage from './src/pages/ChatPage';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
+import { migrateIfNeeded } from './src/utils/modelConfig';
 
 const Tab = createBottomTabNavigator();
 
@@ -26,6 +27,9 @@ export const App: React.FC = () => {
       if (heal.recovered) {
         Alert.alert('数据已恢复', '检测到数据异常，已自动从备份恢复。如发现数据缺失，可在设置中导入完整备份。');
       }
+
+      // 1.5 老用户 GLM Key 自动迁移为多模型配置
+      await migrateIfNeeded();
 
       // 2. 检查是否需要提醒导出备份
       const reminder = await checkExportReminder();

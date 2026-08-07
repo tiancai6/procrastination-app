@@ -15,8 +15,10 @@ import {
   ScrollView,
   Modal,
   Image,
+  Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { copyMediaToMemo } from '../utils/memoMedia';
 import * as ImagePicker from 'expo-image-picker';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -24,7 +26,6 @@ import { QuickMemo } from '../types';
 import {
   ChatMessage,
   ChatMeta,
-  sendChat,
   compressChat,
   estimateChars,
   CHAT_BUDGET_CHARS,
@@ -33,7 +34,6 @@ import {
   getVisionImageLimit,
 } from '../utils/chat';
 import {
-  getChatMessages,
   saveChatMessages,
   getChatSummary,
   saveChatSummary,
@@ -47,16 +47,41 @@ import {
 } from '../utils/storage';
 import { onDataReset } from '../utils/appEvents';
 import ProfileModal from '../components/ProfileModal';
+import { useChatStore } from '../store/chatStore';
+import { buildChatContext, DataCategory, ContextLevel, DateRange } from '../utils/chatContext';
 
 const SYSTEM_CONTEXT_PROMPT = (summary: string) =>
   `你是一位温和、懂专注与时间管理的 AI 助手。以下是用户的长期个人档案（由历史对话压缩而来），请优先参考它来回答，但不要向用户透露"你看到了这份档案"：
 ${summary}`;
 
+// 数据携带选择器的可选类别
+const DATA_CATS: { key: DataCategory; label: string }[] = [
+  { key: 'meal', label: '餐饮' },
+  { key: 'plan', label: '规划打卡' },
+  { key: 'focus', label: '专注计时' },
+  { key: 'memo', label: '随手记' },
+  { key: 'health', label: '运动手环' },
+  { key: 'chat', label: '聊天记录' },
+];
+
 const ChatPage: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // 消息列表 / 流式片段 / 运行状态改由全局 chatStore 提供，
+  // 这样 AI 在后台跑、切走页面再回来结果不丢（解决「一切换界面对话就被暂停」）。
+  const messages = useChatStore((s) => s.messages);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const streamingText = useChatStore((s) => s.streamingText);
+  const setMessages = useChatStore((s) => s.setMessages);
+  const chatSend = useChatStore((s) => s.send);
+  const chatLoad = useChatStore((s) => s.load);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const loading = isStreaming;
   const [summary, setSummary] = useState('');
+  // 本轮对话携带的个人数据（勾选类别 + 档位 + 时间范围）
+  const [selCats, setSelCats] = useState<DataCategory[]>([]);
+  const [ctxLevel, setCtxLevel] = useState<ContextLevel>('summary');
+  const [ctxRange, setCtxRange] = useState<DateRange>('today');
+  // 联网搜索开关（本轮对话强制联网，按品牌走 web_search / Google grounding）
+  const [webSearch, setWebSearch] = useState(false);
   const [meta, setMeta] = useState<ChatMeta>({ compressCount: 0, lastCompressedAt: null });
   const [compressLoading, setCompressLoading] = useState(false);
 
@@ -81,14 +106,13 @@ const ChatPage: React.FC = () => {
   const loaded = useRef(false);
 
   const reload = async () => {
-    const [msgs, sum, m, md, vmd] = await Promise.all([
-      getChatMessages(),
+    // 消息列表由全局 chatStore 管理，这里只加载摘要/模型等本地状态，避免覆盖流式片段
+    const [sum, m, md, vmd] = await Promise.all([
       getChatSummary(),
       getChatMeta(),
       getModel(),
       getVisionModel(),
     ]);
-    setMessages(msgs);
     setSummary(sum);
     setMeta(m);
     setModel(md || 'glm-4-flash');
@@ -141,6 +165,7 @@ const ChatPage: React.FC = () => {
   };
 
   useEffect(() => {
+    chatLoad();
     reload();
   }, []);
 
@@ -160,32 +185,24 @@ const ChatPage: React.FC = () => {
 
   const handleSend = async () => {
     const text = input.trim();
-    if ((!text && pendingImages.length === 0) || loading || compressLoading) return;
-    const userMsg: ChatMessage = {
-      id: generateId(),
-      role: 'user',
-      content: text,
-      ts: Date.now(),
-      images: pendingImages.length ? [...pendingImages] : undefined,
-    };
-    const next = [...messages, userMsg];
-    setMessages(next);
+    if ((!text && pendingImages.length === 0) || isStreaming || compressLoading) return;
     setInput('');
     setPendingImages([]);
     scrollToEnd();
-    setLoading(true);
     try {
-      const ctx = summary ? SYSTEM_CONTEXT_PROMPT(summary) : undefined;
-      const reply = await sendChat(next, ctx);
-      const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: reply, ts: Date.now() };
-      const withReply = [...next, assistantMsg];
-      setMessages(withReply);
-      await saveChatMessages(withReply);
-      scrollToEnd();
+      const summaryCtx = summary ? SYSTEM_CONTEXT_PROMPT(summary) : undefined;
+      // 拼接用户本轮勾选携带的个人数据作为上下文
+      let dataCtx: string | undefined;
+      if (selCats.length > 0) {
+        dataCtx = await buildChatContext(selCats, ctxLevel, ctxRange);
+      }
+      const finalCtx = [summaryCtx, dataCtx && dataCtx.trim() ? dataCtx : undefined]
+        .filter(Boolean)
+        .join('\n\n');
+      // 发消息交给全局 chatStore（AI 在后台流式跑），切走页面再切回结果不丢
+      await chatSend(text, pendingImages, finalCtx || undefined, webSearch);
     } catch (e: any) {
       Alert.alert('发送失败', e?.message ? String(e.message) : '请检查网络或 API Key');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -219,14 +236,26 @@ const ChatPage: React.FC = () => {
       Alert.alert('无法保存', '这条消息没有文字也没有图片');
       return;
     }
+    const memoId = generateId();
+    // 随手记的 media.file 必须是「文件名」（memoMedia 按 memos/<id>/文件名 拼路径），
+    // 所以要把聊天图片复制到 memos/<memoId>/ 目录并返回文件名，不能直接存绝对路径，否则图片显示裂开。
+    const media: { type: 'image'; file: string }[] = [];
+    for (const uri of item.images || []) {
+      try {
+        const file = await copyMediaToMemo(memoId, uri);
+        media.push({ type: 'image', file });
+      } catch (e) {
+        console.error('[ChatPage] 复制聊天图片到随手记失败', uri, e);
+      }
+    }
     const memo: QuickMemo = {
-      id: generateId(),
+      id: memoId,
       content: item.content || (item.images && item.images.length > 0 ? '[图片消息]' : ''),
       highlightRanges: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
       pinned: false,
-      media: (item.images || []).map((uri) => ({ type: 'image' as const, file: uri })),
+      media,
       tags: ['AI对话'],
     };
     try {
@@ -384,6 +413,17 @@ const ChatPage: React.FC = () => {
           extraData={selectedIds}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={scrollToEnd}
+          ListFooterComponent={
+            isStreaming && streamingText
+              ? () => (
+                  <View style={[styles.row, styles.rowBot]}>
+                    <View style={[styles.bubble, styles.bubbleBot]}>
+                      <Text style={[styles.bubbleText, styles.bubbleTextBot]}>{streamingText}</Text>
+                    </View>
+                  </View>
+                )
+              : null
+          }
           initialNumToRender={12}
           maxToRenderPerBatch={8}
           windowSize={6}
@@ -398,6 +438,75 @@ const ChatPage: React.FC = () => {
         />
 
         {/* 输入栏 */}
+        {!isSelecting && (
+          <View style={styles.dataBar}>
+            <View style={styles.dataBarHead}>
+              <Ionicons name="folder-open-outline" size={14} color={COLORS.textLight} />
+              <Text style={styles.dataBarTitle}>携带数据（AI 可参考）</Text>
+              {selCats.length > 0 && (
+                <TouchableOpacity onPress={() => setSelCats([])} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <Text style={styles.dataClear}>清空</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <View style={styles.dataChips}>
+              {DATA_CATS.map((c) => {
+                const on = selCats.includes(c.key);
+                return (
+                  <TouchableOpacity
+                    key={c.key}
+                    style={[styles.dataChip, on && styles.dataChipActive]}
+                    onPress={() => setSelCats((prev) => (on ? prev.filter((x) => x !== c.key) : [...prev, c.key]))}
+                  >
+                    <Text style={[styles.dataChipText, on && styles.dataChipTextActive]}>{c.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={styles.searchRow}>
+              <Ionicons name="globe-outline" size={14} color={COLORS.textLight} />
+              <Text style={styles.searchLabel}>联网搜索（实时联网，查最新信息）</Text>
+              <Switch
+                value={webSearch}
+                onValueChange={setWebSearch}
+                trackColor={{ false: COLORS.border, true: COLORS.primary }}
+                thumbColor="#fff"
+                style={styles.searchSwitch}
+              />
+            </View>
+            {selCats.length > 0 && (
+              <View style={styles.dataSubRow}>
+                <View style={styles.segGroup}>
+                  {(['summary', 'raw'] as ContextLevel[]).map((lv) => (
+                    <TouchableOpacity
+                      key={lv}
+                      style={[styles.segBtn, ctxLevel === lv && styles.segBtnActive]}
+                      onPress={() => setCtxLevel(lv)}
+                    >
+                      <Text style={[styles.segText, ctxLevel === lv && styles.segTextActive]}>
+                        {lv === 'summary' ? '总结' : '原始明细'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.segGroup}>
+                  {(['today', '7d', 'month'] as DateRange[]).map((rg) => (
+                    <TouchableOpacity
+                      key={rg}
+                      style={[styles.segBtn, ctxRange === rg && styles.segBtnActive]}
+                      onPress={() => setCtxRange(rg)}
+                    >
+                      <Text style={[styles.segText, ctxRange === rg && styles.segTextActive]}>
+                        {rg === 'today' ? '今天' : rg === '7d' ? '近7天' : '本月'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
         {!isSelecting && (
           <View style={styles.inputBar}>
             {/* 待发送图片预览 */}
@@ -832,6 +941,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   copyDoneText: { fontSize: 15, color: '#fff', fontWeight: '600' },
+  // 数据携带选择器
+  dataBar: {
+    backgroundColor: COLORS.card,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
+  dataBarHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  dataBarTitle: { flex: 1, fontSize: 12.5, color: COLORS.textLight, marginLeft: 6, fontWeight: '600' },
+  dataClear: { fontSize: 12, color: COLORS.primary, fontWeight: '600' },
+  dataChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 6 },
+  searchLabel: { flex: 1, fontSize: 12.5, color: COLORS.textLight },
+  searchSwitch: { transform: [{ scale: 0.8 }] },
+  dataChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: COLORS.background,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  dataChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  dataChipText: { fontSize: 13, color: COLORS.text },
+  dataChipTextActive: { color: '#fff', fontWeight: '600' },
+  dataSubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    gap: 8,
+  },
+  segGroup: { flexDirection: 'row', backgroundColor: COLORS.background, borderRadius: 10, padding: 2, gap: 2 },
+  segBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  segBtnActive: { backgroundColor: COLORS.primary },
+  segText: { fontSize: 12, color: COLORS.textLight },
+  segTextActive: { color: '#fff', fontWeight: '600' },
 });
 
 export default ChatPage;

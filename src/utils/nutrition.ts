@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { GLM_ENDPOINT } from './ai';
-import { getApiKey, getModel } from './storage';
+import { getActiveConfig } from './modelConfig';
+import { postChat, parseJsonContent } from './model';
 import { autoBackup } from './autoBackup';
 import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy } from '../types';
 
@@ -239,64 +239,37 @@ const normalizeNutrition = (raw: any): MealNutrition => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const estimateMealNutrition = async (entry: MealEntry): Promise<EstimateResult> => {
-  const apiKey = await getApiKey();
-  if (!apiKey) return { result: null, status: 'nokey' };
+  const cfg = await getActiveConfig(false);
+  if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
 
-  const model = await getModel();
   const MAX_RETRIES = 4;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(GLM_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: NUTRITION_SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}\n请输出这顿的营养估算 JSON。`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.5,
-          max_tokens: 1000, // 逐项明细比原来长，放宽避免 JSON 被截断
-        }),
-      });
+      const content = await postChat(
+        cfg,
+        [
+          { role: 'system', content: NUTRITION_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}\n请输出这顿的营养估算 JSON。`,
+          },
+        ],
+        { temperature: 0.5, maxTokens: 1000 },
+      );
 
-      // 429 = 请求太频繁 / 超出额度：退避后重试，而不是直接失败
-      if (res.status === 429) {
-        if (attempt < MAX_RETRIES) {
-          const wait = Math.min(1500 * Math.pow(2, attempt), 6000) + Math.floor(Math.random() * 400);
-          console.warn(`[Nutrition] GLM 429 限流，第 ${attempt + 1} 次重试，等待 ${Math.round(wait)}ms`);
-          await sleep(wait);
-          continue;
-        }
-        console.warn('[Nutrition] GLM 持续限流，放弃重试');
-        return { result: null, status: 'rate' };
-      }
-      if (!res.ok) {
-        console.error('[Nutrition] GLM error', res.status);
-        return { result: null, status: 'error' };
-      }
-      const data = await res.json();
-      const content: string | undefined = data?.choices?.[0]?.message?.content;
-      if (!content) return { result: null, status: 'error' };
-      const parsed = normalizeNutrition(JSON.parse(content));
+      const parsed = normalizeNutrition(parseJsonContent(content));
       return { result: parsed, status: 'ok' };
-    } catch (e) {
-      // 网络抖动等非 429 错误：也做一次退避重试，仍失败才报 error
-      if (attempt < MAX_RETRIES) {
-        await sleep(1000);
+    } catch (e: any) {
+      const isRate = e?.message && String(e.message).includes('429');
+      // 仅 429 限流才退避重试；其它错误（401/JSON 解析失败/网络）直接失败，避免无意义重试 4 次
+      if (isRate && attempt < MAX_RETRIES) {
+        const wait = Math.min(1500 * Math.pow(2, attempt), 6000) + Math.floor(Math.random() * 400);
+        await sleep(wait);
         continue;
       }
       console.error('[Nutrition] GLM call failed', e);
-      return { result: null, status: 'error' };
+      return { result: null, status: isRate ? 'rate' : 'error' };
     }
   }
   return { result: null, status: 'error' };
@@ -362,9 +335,8 @@ export const requestMealAdjustmentAdvice = async (
   mealsSummary: string,
   currentText: string,
 ): Promise<{ text: string; status: 'ok' | 'nokey' | 'error' }> => {
-  const apiKey = await getApiKey();
-  if (!apiKey) return { text: '', status: 'nokey' };
-  const model = await getModel();
+  const cfg = await getActiveConfig(false);
+  if (!cfg) return { text: '', status: 'nokey' };
   const prompt = `你是营养师。以下是某段时间的每日三餐记录与营养摄入情况：
 ${mealsSummary}
 当前摄入情况：${currentText}
@@ -373,26 +345,11 @@ ${mealsSummary}
 2）给出 2-3 条可落地的饮食调整方案；
 3）语言简洁口语化、中文、不超过 200 字。只输出建议正文，不要标题。`;
   try {
-    const res = await fetch(GLM_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: '你是专业的营养师，善于用大白话给普通人可执行的饮食建议。' },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.6,
-        max_tokens: 400,
-      }),
-    });
-    if (!res.ok) return { text: '', status: 'error' };
-    const data = await res.json();
-    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    const content = await postChat(cfg, [
+      { role: 'system', content: '你是专业的营养师，善于用大白话给普通人可执行的饮食建议。' },
+      { role: 'user', content: prompt },
+    ], { temperature: 0.6, maxTokens: 400 });
+
     return { text: content || '', status: content ? 'ok' : 'error' };
   } catch (e) {
     console.error('[Nutrition] advice call failed', e);

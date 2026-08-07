@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -7,12 +7,34 @@ import TimerCard from '../components/TimerCard';
 import StatCard from '../components/StatCard';
 import LedgerQuickSheet from '../components/LedgerQuickSheet';
 import MealQuickSheet from '../components/MealQuickSheet';
+import HealthImportSheet from '../components/HealthImportSheet';
 import { useSessionStore } from '../store/sessionStore';
 import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import { getTodayExpense, getTodayIncome, getMonthExpense, formatMoney } from '../utils/ledger';
 import { getMealsByDate, getNutritionForDate, estimateDayMeals, NUTRITION_TARGETS } from '../utils/nutrition';
-import { getApiKey } from '../utils/storage';
+import {
+  getApiKey,
+  getBodyProfile,
+  setBodyProfile,
+  getDailyActivity,
+  setDailyActivity,
+  generateId,
+  ExerciseRecord,
+  getHealthDaily,
+  HealthDaily,
+} from '../utils/storage';
+import {
+  calcDayEnergy,
+  BASE_LEVEL_LABEL,
+  EXERCISE_TYPES,
+  estimateExerciseKcal,
+  saveExerciseRecord,
+  DEFAULT_BODY_PROFILE,
+  DayEnergy,
+  DailyActivity,
+  BodyProfile,
+} from '../utils/activity';
 import { LedgerEntry, MealEntry, MealType, NutritionResult } from '../types';
 
 const toDateStr = (d: Date): string => {
@@ -44,6 +66,19 @@ const HomePage: React.FC = () => {
   const [todayNutrition, setTodayNutrition] = useState<NutritionResult | null>(null);
   const [estimating, setEstimating] = useState(false);
 
+  // 今日活动量 & TDEE
+  const [dayEnergy, setDayEnergy] = useState<DayEnergy>({ bmr: 0, tdee: 0, baseLevel: 'sedentary', exerciseKcal: 0 });
+  const [activity, setActivity] = useState<DailyActivity>({ baseLevel: 'sedentary', exercises: [] });
+  const [bodyModal, setBodyModal] = useState(false);
+  const [bodyProfile, setBodyProfileLocal] = useState<BodyProfile>(DEFAULT_BODY_PROFILE);
+  const [exModal, setExModal] = useState(false);
+  const [exType, setExType] = useState(EXERCISE_TYPES[0]);
+  const [exDuration, setExDuration] = useState('30');
+  const [exKcal, setExKcal] = useState('');
+  const [estimatingEx, setEstimatingEx] = useState(false);
+  const [healthModal, setHealthModal] = useState(false);
+  const [health, setHealth] = useState<HealthDaily | null>(null);
+
   const loadMeals = async () => {
     const t = toDateStr(new Date());
     const list = await getMealsByDate(t);
@@ -51,11 +86,19 @@ const HomePage: React.FC = () => {
     setTodayNutrition(await getNutritionForDate(t));
   };
 
+  const loadActivity = async () => {
+    const t = toDateStr(new Date());
+    setDayEnergy(await calcDayEnergy(t));
+    setActivity(await getDailyActivity(t));
+    setHealth(await getHealthDaily(t));
+  };
+
   useEffect(() => {
     fetchSessions();
     fetchStats();
     loadLedger();
     loadMeals();
+    loadActivity();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -66,6 +109,7 @@ const HomePage: React.FC = () => {
       fetchStats();
       loadLedger();
       loadMeals();
+      loadActivity();
     });
     return off;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,6 +130,69 @@ const HomePage: React.FC = () => {
     setEstimating(false);
     await loadMeals();
     emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
+  };
+
+  // —— 运动量 / TDEE ——
+  const setBaseLevel = async (lv: DailyActivity['baseLevel']) => {
+    const t = toDateStr(new Date());
+    const next: DailyActivity = { ...activity, baseLevel: lv };
+    setActivity(next);
+    await setDailyActivity(t, next);
+    setDayEnergy(await calcDayEnergy(t));
+  };
+
+  const openExModal = () => {
+    setExType(EXERCISE_TYPES[0]);
+    setExDuration('30');
+    setExKcal('');
+    setExModal(true);
+  };
+
+  const estimateEx = async () => {
+    const d = parseInt(exDuration, 10);
+    if (!d || d <= 0) {
+      Alert.alert('请填写时长');
+      return;
+    }
+    setEstimatingEx(true);
+    try {
+      const kcal = await estimateExerciseKcal(`${exType} ${d}分钟`);
+      if (kcal) setExKcal(String(kcal));
+      else Alert.alert('估算失败', '请检查网络或手动填写消耗');
+    } finally {
+      setEstimatingEx(false);
+    }
+  };
+
+  const confirmEx = async () => {
+    const d = parseInt(exDuration, 10);
+    if (!d || d <= 0) {
+      Alert.alert('请填写时长');
+      return;
+    }
+    const t = toDateStr(new Date());
+    const rec: ExerciseRecord = {
+      id: generateId(),
+      type: exType,
+      durationMin: d,
+      kcal: exKcal ? parseInt(exKcal, 10) : undefined,
+    };
+    const next = await saveExerciseRecord(t, activity, rec);
+    setActivity(next);
+    setDayEnergy(await calcDayEnergy(t));
+    setExModal(false);
+  };
+
+  const openBodyModal = async () => {
+    const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
+    setBodyProfileLocal(p);
+    setBodyModal(true);
+  };
+
+  const saveBody = async () => {
+    await setBodyProfile(bodyProfile);
+    setDayEnergy(await calcDayEnergy(toDateStr(new Date())));
+    setBodyModal(false);
   };
 
   // 今日还缺哪些营养素（规则判定，离线可用）
@@ -129,6 +236,7 @@ const HomePage: React.FC = () => {
   const weekDay = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][today.getDay()];
 
   return (
+    <>
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
         <View style={styles.headerTop}>
@@ -343,6 +451,85 @@ const HomePage: React.FC = () => {
         </TouchableOpacity>
       </View>
 
+      {/* 今日活动量 & TDEE */}
+      <View style={styles.activityCard}>
+        <View style={styles.activityHead}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.activityTitle}>今日活动量</Text>
+            <Text style={styles.activitySub}>
+              基础代谢 {dayEnergy.bmr} · 运动 {dayEnergy.exerciseKcal} · 总消耗 {dayEnergy.tdee} kcal
+            </Text>
+          </View>
+          <TouchableOpacity onPress={openBodyModal}>
+            <Text style={styles.activityLink}>身体信息</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.activityLevels}>
+          {(['sedentary', 'light', 'moderate', 'high'] as const).map((lv) => (
+            <TouchableOpacity
+              key={lv}
+              style={[styles.levelChip, activity.baseLevel === lv && styles.levelChipActive]}
+              onPress={() => setBaseLevel(lv)}
+            >
+              <Text style={[styles.levelChipText, activity.baseLevel === lv && styles.levelChipTextActive]}>
+                {BASE_LEVEL_LABEL[lv]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {activity.exercises.length > 0 && (
+          <View style={styles.exList}>
+            {activity.exercises.map((e) => (
+              <View key={e.id} style={styles.exRow}>
+                <Text style={styles.exName}>
+                  {e.type} {e.durationMin} 分钟
+                </Text>
+                <Text style={styles.exKcal}>{e.kcal ? `${e.kcal} kcal` : '未估算'}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {health && (health.steps || health.sleepMin || health.restingHr) && (
+          <View style={styles.healthRow}>
+            <Ionicons name="watch-outline" size={14} color="#1D4ED8" />
+            <Text style={styles.healthText}>
+              {[
+                health.steps !== undefined ? `${health.steps} 步` : '',
+                health.sleepMin !== undefined ? `睡眠 ${Math.round((health.sleepMin / 60) * 10) / 10}h` : '',
+                health.restingHr !== undefined ? `静息 ${health.restingHr}bpm` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.activityBtnRow}>
+          <TouchableOpacity style={[styles.exAddBtn, { flex: 1 }]} onPress={openExModal}>
+            <Ionicons name="add-circle-outline" size={15} color="#fff" />
+            <Text style={styles.exAddText}>加运动记录</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.healthBtn} onPress={() => setHealthModal(true)}>
+            <Ionicons name="watch-outline" size={15} color="#1D4ED8" />
+            <Text style={styles.healthBtnText}>手环数据</Text>
+          </TouchableOpacity>
+        </View>
+
+        {todayNutrition && (
+          <View style={styles.tdeeHint}>
+            <Text style={styles.tdeeHintText}>
+              今天已吃 {Math.round(todayNutrition.calories)} kcal，消耗约 {dayEnergy.tdee} kcal，
+              {dayEnergy.tdee - Math.round(todayNutrition.calories) >= 0
+                ? `还差 ${dayEnergy.tdee - Math.round(todayNutrition.calories)} kcal`
+                : `已超出 ${Math.round(todayNutrition.calories) - dayEnergy.tdee} kcal`}
+            </Text>
+          </View>
+        )}
+      </View>
+
       <MealQuickSheet
         visible={mealVisible}
         date={toDateStr(new Date())}
@@ -352,7 +539,107 @@ const HomePage: React.FC = () => {
           emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
         }}
       />
+
+      <HealthImportSheet
+        visible={healthModal}
+        date={toDateStr(new Date())}
+        onClose={() => setHealthModal(false)}
+        onSaved={() => loadActivity()}
+      />
     </ScrollView>
+
+      {/* 身体信息 Modal */}
+      <Modal visible={bodyModal} transparent animationType="slide">
+        <View style={styles.sheetWrap}>
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>身体信息</Text>
+            <Text style={styles.sheetLabel}>性别</Text>
+            <View style={styles.segGroup}>
+              {(['male', 'female'] as const).map((g) => (
+                <TouchableOpacity
+                  key={g}
+                  style={[styles.segBtn, bodyProfile.gender === g && styles.segBtnActive]}
+                  onPress={() => setBodyProfileLocal({ ...bodyProfile, gender: g })}
+                >
+                  <Text style={[styles.segText, bodyProfile.gender === g && styles.segTextActive]}>
+                    {g === 'male' ? '男' : '女'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.sheetLabel}>年龄</Text>
+            <TextInput
+              style={styles.inputBox}
+              keyboardType="numeric"
+              value={String(bodyProfile.age)}
+              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, age: parseInt(v || '0', 10) })}
+            />
+            <Text style={styles.sheetLabel}>身高 (cm)</Text>
+            <TextInput
+              style={styles.inputBox}
+              keyboardType="numeric"
+              value={String(bodyProfile.height)}
+              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, height: parseInt(v || '0', 10) })}
+            />
+            <Text style={styles.sheetLabel}>体重 (kg)</Text>
+            <TextInput
+              style={styles.inputBox}
+              keyboardType="numeric"
+              value={String(bodyProfile.weight)}
+              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, weight: parseInt(v || '0', 10) })}
+            />
+            <View style={styles.sheetActions}>
+              <TouchableOpacity style={styles.sheetCancel} onPress={() => setBodyModal(false)}>
+                <Text style={styles.sheetCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.sheetSave} onPress={saveBody}>
+                <Text style={styles.sheetSaveText}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 加运动记录 Modal */}
+      <Modal visible={exModal} transparent animationType="slide">
+        <View style={styles.sheetWrap}>
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>加运动记录</Text>
+            <Text style={styles.sheetLabel}>类型</Text>
+            <View style={styles.exTypeRow}>
+              {EXERCISE_TYPES.map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
+                  onPress={() => setExType(t)}
+                >
+                  <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.sheetLabel}>时长（分钟）</Text>
+            <TextInput style={styles.inputBox} keyboardType="numeric" value={exDuration} onChangeText={setExDuration} />
+            <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
+              {estimatingEx ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.estimateBtnText}>AI 估算消耗</Text>
+              )}
+            </TouchableOpacity>
+            <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
+            <TextInput style={styles.inputBox} keyboardType="numeric" value={exKcal} onChangeText={setExKcal} />
+            <View style={styles.sheetActions}>
+              <TouchableOpacity style={styles.sheetCancel} onPress={() => setExModal(false)}>
+                <Text style={styles.sheetCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.sheetSave} onPress={confirmEx}>
+                <Text style={styles.sheetSaveText}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 };
 
@@ -699,6 +986,148 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     fontWeight: '600',
   },
+  // 今日活动量 & TDEE
+  activityCard: {
+    marginTop: 12,
+    marginHorizontal: 16,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 14,
+    padding: 14,
+  },
+  activityHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  activityTitle: { fontSize: 15, fontWeight: '700', color: '#1D4ED8' },
+  activitySub: { fontSize: 11.5, color: '#3B82F6', marginTop: 3 },
+  activityLink: { fontSize: 12, color: '#1D4ED8', fontWeight: '600', paddingVertical: 2 },
+  activityLevels: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  levelChip: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: 0.5,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+  },
+  levelChipActive: { backgroundColor: '#1D4ED8', borderColor: '#1D4ED8' },
+  levelChipText: { fontSize: 12.5, color: '#1E40AF' },
+  levelChipTextActive: { color: '#fff', fontWeight: '600' },
+  exList: { marginTop: 10, gap: 6 },
+  exRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#fff', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  exName: { fontSize: 13, color: COLORS.text },
+  exKcal: { fontSize: 12.5, color: '#1D4ED8', fontWeight: '600' },
+  exAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 10,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: '#3B82F6',
+  },
+  exAddText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  activityBtnRow: { flexDirection: 'row', gap: 8 },
+  healthBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  healthBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '600' },
+  healthRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 10,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  healthText: { fontSize: 12.5, color: '#1E40AF', flexShrink: 1 },
+  tdeeHint: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#BFDBFE',
+  },
+  tdeeHintText: { fontSize: 12.5, color: '#1E40AF', fontWeight: '500' },
+  // 通用底部弹窗
+  sheetWrap: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 18,
+    paddingBottom: 28,
+  },
+  sheetTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
+  sheetLabel: { fontSize: 13, color: COLORS.textLight, marginTop: 12, marginBottom: 6 },
+  inputBox: {
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: COLORS.text,
+  },
+  sheetActions: { flexDirection: 'row', gap: 12, marginTop: 18 },
+  sheetCancel: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+  },
+  sheetCancelText: { fontSize: 14, color: COLORS.textLight, fontWeight: '600' },
+  sheetSave: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+  },
+  sheetSaveText: { fontSize: 14, color: '#fff', fontWeight: '600' },
+  segGroup: { flexDirection: 'row', backgroundColor: COLORS.background, borderRadius: 10, padding: 3, gap: 3 },
+  segBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  segBtnActive: { backgroundColor: COLORS.primary },
+  segText: { fontSize: 13, color: COLORS.textLight },
+  segTextActive: { color: '#fff', fontWeight: '600' },
+  exTypeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  exTypeChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: COLORS.background,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  exTypeChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  exTypeChipText: { fontSize: 13, color: COLORS.text },
+  exTypeChipTextActive: { color: '#fff', fontWeight: '600' },
+  estimateBtn: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#8B5CF6',
+  },
+  estimateBtnText: { color: '#fff', fontSize: 13.5, fontWeight: '600' },
 });
 
 export default HomePage;

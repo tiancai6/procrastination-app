@@ -1,13 +1,13 @@
 import { TimerSession, QuickMemo, LedgerEntry } from '../types';
 import { getMonthExpense, getMonthIncome, getCategoryBreakdown } from './ledger';
 import {
-  getApiKey,
-  getModel,
   getCachedInsight,
   saveCachedInsight,
   getCachedMemoAnalysis,
   saveCachedMemoAnalysis,
 } from './storage';
+import { getActiveConfig } from './modelConfig';
+import { postChat, parseJsonContent } from './model';
 import {
   calculateCategoryStats,
   calculateTaskTypeStats,
@@ -82,8 +82,8 @@ const buildSummary = (period: string, records: TimerSession[]) => {
 
 // 数据指纹：只取会变化的统计字段，用于判断是否需要重新分析
 const makeFingerprint = (period: string, summary: Record<string, unknown>): string => {
-  const { 周期, 总时长分钟, 次数, 原因占比, 周趋势 } = summary;
-  return JSON.stringify({ 周期, 总时长分钟, 次数, 原因占比, 周趋势 });
+  const { 周期, 总时长分钟, 次数, 分类占比, 周趋势 } = summary;
+  return JSON.stringify({ 周期, 总时长分钟, 次数, 分类占比, 周趋势 });
 };
 
 const CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 天
@@ -108,46 +108,23 @@ const normalize = (raw: any): AIInsightResult => ({
 });
 
 const callGLM = async (
-  apiKey: string,
-  model: string,
   summary: Record<string, unknown>,
 ): Promise<AIInsightResult | null> => {
   try {
-    const res = await fetch(GLM_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `以下是我的专注时长统计摘要（已脱敏）：\n${JSON.stringify(summary, null, 2)}\n请输出分析 JSON。`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-        max_tokens: 900,
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.error('[AI] GLM API error', res.status, errText);
-      return null;
-    }
-
-    const data = await res.json();
-    const content: string | undefined = data?.choices?.[0]?.message?.content;
-    if (!content) {
-      console.error('[AI] GLM returned empty content');
-      return null;
-    }
-    return normalize(JSON.parse(content));
+    const cfg = await getActiveConfig(false);
+    if (!cfg) return null;
+    const content = await postChat(
+      cfg,
+      [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `以下是我的专注时长统计摘要（已脱敏）：\n${JSON.stringify(summary, null, 2)}\n请输出分析 JSON。`,
+        },
+      ],
+      { temperature: 0.7, maxTokens: 900 },
+    );
+    return normalize(parseJsonContent(content));
   } catch (e) {
     console.error('[AI] GLM call failed', e);
     return null;
@@ -159,8 +136,8 @@ export const getAIInsights = async (
   records: TimerSession[],
   force = false,
 ): Promise<{ result: AIInsightResult | null; source: 'cache' | 'api' | 'none' }> => {
-  const apiKey = await getApiKey();
-  if (!apiKey || records.length === 0) {
+  const cfg = await getActiveConfig(false);
+  if (!cfg || records.length === 0) {
     return { result: null, source: 'none' };
   }
 
@@ -174,8 +151,7 @@ export const getAIInsights = async (
     }
   }
 
-  const model = await getModel();
-  const result = await callGLM(apiKey, model, summary);
+  const result = await callGLM(summary);
   if (result) {
     await saveCachedInsight(period, { fingerprint, result, timestamp: Date.now() });
     return { result, source: 'api' };
@@ -187,7 +163,7 @@ export const getAIInsights = async (
   return { result: null, source: 'none' };
 };
 
-export const hasApiKey = async (): Promise<boolean> => !!(await getApiKey());
+export const hasApiKey = async (): Promise<boolean> => !!(await getActiveConfig(false));
 
 // 仅读取已有缓存（不联网），用于进入页面时展示历史分析结果
 export const loadCachedInsight = async (
@@ -256,42 +232,25 @@ const normalizeMemo = (raw: any): MemoAnalysisResult => ({
 });
 
 const callGLMForMemos = async (
-  apiKey: string,
-  model: string,
   rangeLabel: string,
   text: string,
 ): Promise<MemoAnalysisResult | null> => {
   try {
-    const res = await fetch(GLM_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: MEMO_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `以下是${rangeLabel}的随手记：\n${text}\n请输出分析 JSON。`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-        max_tokens: 1200,
-      }),
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.error('[AI] GLM memo error', res.status, errText);
-      return null;
-    }
-    const data = await res.json();
-    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    const cfg = await getActiveConfig(false);
+    if (!cfg) return null;
+    const content = await postChat(
+      cfg,
+      [
+        { role: 'system', content: MEMO_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `以下是${rangeLabel}的随手记：\n${text}\n请输出分析 JSON。`,
+        },
+      ],
+      { temperature: 0.7, maxTokens: 1200 },
+    );
     if (!content) return null;
-    return normalizeMemo(JSON.parse(content));
+    return normalizeMemo(parseJsonContent(content));
   } catch (e) {
     console.error('[AI] GLM memo call failed', e);
     return null;
@@ -304,8 +263,8 @@ export const analyzeMemos = async (
   memos: QuickMemo[],
   force = false,
 ): Promise<{ result: MemoAnalysisResult | null; source: 'cache' | 'api' | 'none' }> => {
-  const apiKey = await getApiKey();
-  if (!apiKey || memos.length === 0) {
+  const cfg = await getActiveConfig(false);
+  if (!cfg || memos.length === 0) {
     return { result: null, source: 'none' };
   }
   const fingerprint = makeMemoFingerprint(range, memos);
@@ -315,9 +274,8 @@ export const analyzeMemos = async (
       return { result: cached.result, source: 'cache' };
     }
   }
-  const model = await getModel();
   const text = buildMemoText(memos);
-  const result = await callGLMForMemos(apiKey, model, rangeLabel, text);
+  const result = await callGLMForMemos(rangeLabel, text);
   if (result) {
     await saveCachedMemoAnalysis(range, { fingerprint, result, timestamp: Date.now() });
     return { result, source: 'api' };
@@ -367,40 +325,22 @@ const buildLedgerSummary = (entries: LedgerEntry[]) => {
 export const summarizeLedger = async (
   entries: LedgerEntry[],
 ): Promise<{ result: string | null; status: 'ok' | 'nokey' | 'error' }> => {
-  const apiKey = await getApiKey();
-  if (!apiKey) return { result: null, status: 'nokey' };
+  const cfg = await getActiveConfig(false);
+  if (!cfg) return { result: null, status: 'nokey' };
   if (entries.length === 0) return { result: null, status: 'nokey' };
-  const model = await getModel();
   try {
-    const res = await fetch(GLM_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: LEDGER_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `以下是我的记账汇总（已脱敏）：\n${JSON.stringify(buildLedgerSummary(entries), null, 2)}\n请输出总结 JSON。`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-        max_tokens: 600,
-      }),
-    });
-    if (!res.ok) {
-      console.error('[AI] GLM ledger error', res.status);
-      return { result: null, status: 'error' };
-    }
-    const data = await res.json();
-    const content: string | undefined = data?.choices?.[0]?.message?.content;
-    if (!content) return { result: null, status: 'error' };
-    const parsed = JSON.parse(content);
+    const content = await postChat(
+      cfg,
+      [
+        { role: 'system', content: LEDGER_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `以下是我的记账汇总（已脱敏）：\n${JSON.stringify(buildLedgerSummary(entries), null, 2)}\n请输出总结 JSON。`,
+        },
+      ],
+      { temperature: 0.7, maxTokens: 600 },
+    );
+    const parsed = parseJsonContent(content);
     const summary: string = typeof parsed?.summary === 'string' ? parsed.summary : '';
     return { result: summary || null, status: summary ? 'ok' : 'error' };
   } catch (e) {
