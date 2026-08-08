@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -35,6 +35,7 @@ import {
   DailyActivity,
   BodyProfile,
 } from '../utils/activity';
+import TrendPage from './TrendPage';
 import { LedgerEntry, MealEntry, MealType, NutritionResult } from '../types';
 
 const toDateStr = (d: Date): string => {
@@ -72,7 +73,9 @@ const HomePage: React.FC = () => {
   const [bodyModal, setBodyModal] = useState(false);
   const [bodyProfile, setBodyProfileLocal] = useState<BodyProfile>(DEFAULT_BODY_PROFILE);
   const [exModal, setExModal] = useState(false);
+  const [trendVisible, setTrendVisible] = useState(false);
   const [exType, setExType] = useState(EXERCISE_TYPES[0]);
+  const [exCustom, setExCustom] = useState('');
   const [exDuration, setExDuration] = useState('30');
   const [exKcal, setExKcal] = useState('');
   const [estimatingEx, setEstimatingEx] = useState(false);
@@ -145,6 +148,7 @@ const HomePage: React.FC = () => {
     setExType(EXERCISE_TYPES[0]);
     setExDuration('30');
     setExKcal('');
+    setExCustom('');
     setExModal(true);
   };
 
@@ -156,7 +160,8 @@ const HomePage: React.FC = () => {
     }
     setEstimatingEx(true);
     try {
-      const kcal = await estimateExerciseKcal(`${exType} ${d}分钟`);
+      const finalType = exType === '其他' ? (exCustom.trim() || '其他') : exType;
+      const kcal = await estimateExerciseKcal(`${finalType} ${d}分钟`);
       if (kcal) setExKcal(String(kcal));
       else Alert.alert('估算失败', '请检查网络或手动填写消耗');
     } finally {
@@ -171,9 +176,10 @@ const HomePage: React.FC = () => {
       return;
     }
     const t = toDateStr(new Date());
+    const finalType = exType === '其他' ? (exCustom.trim() || '其他') : exType;
     const rec: ExerciseRecord = {
       id: generateId(),
-      type: exType,
+      type: finalType,
       durationMin: d,
       kcal: exKcal ? parseInt(exKcal, 10) : undefined,
     };
@@ -507,6 +513,10 @@ const HomePage: React.FC = () => {
           </View>
         )}
 
+        <TouchableOpacity style={styles.trendBtn} onPress={() => setTrendVisible(true)}>
+          <Ionicons name="stats-chart-outline" size={15} color={COLORS.primary} />
+          <Text style={styles.trendBtnText}>查看健身与身体趋势</Text>
+        </TouchableOpacity>
         <View style={styles.activityBtnRow}>
           <TouchableOpacity style={[styles.exAddBtn, { flex: 1 }]} onPress={openExModal}>
             <Ionicons name="add-circle-outline" size={15} color="#fff" />
@@ -548,64 +558,77 @@ const HomePage: React.FC = () => {
       />
     </ScrollView>
 
+      <TrendPage visible={trendVisible} onClose={() => setTrendVisible(false)} />
+
       {/* 身体信息 Modal */}
-      <Modal visible={bodyModal} transparent animationType="slide">
-        <View style={styles.sheetWrap}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>身体信息</Text>
-            <Text style={styles.sheetLabel}>性别</Text>
-            <View style={styles.segGroup}>
-              {(['male', 'female'] as const).map((g) => (
-                <TouchableOpacity
-                  key={g}
-                  style={[styles.segBtn, bodyProfile.gender === g && styles.segBtnActive]}
-                  onPress={() => setBodyProfileLocal({ ...bodyProfile, gender: g })}
-                >
-                  <Text style={[styles.segText, bodyProfile.gender === g && styles.segTextActive]}>
-                    {g === 'male' ? '男' : '女'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>年龄</Text>
-            <TextInput
-              style={styles.inputBox}
-              keyboardType="numeric"
-              value={String(bodyProfile.age)}
-              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, age: parseInt(v || '0', 10) })}
-            />
-            <Text style={styles.sheetLabel}>身高 (cm)</Text>
-            <TextInput
-              style={styles.inputBox}
-              keyboardType="numeric"
-              value={String(bodyProfile.height)}
-              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, height: parseInt(v || '0', 10) })}
-            />
-            <Text style={styles.sheetLabel}>体重 (kg)</Text>
-            <TextInput
-              style={styles.inputBox}
-              keyboardType="numeric"
-              value={String(bodyProfile.weight)}
-              onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, weight: parseInt(v || '0', 10) })}
-            />
-            <View style={styles.sheetActions}>
-              <TouchableOpacity style={styles.sheetCancel} onPress={() => setBodyModal(false)}>
-                <Text style={styles.sheetCancelText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.sheetSave} onPress={saveBody}>
-                <Text style={styles.sheetSaveText}>保存</Text>
-              </TouchableOpacity>
-            </View>
+      <Modal visible={bodyModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setBodyModal(false); }}>
+        <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setBodyModal(false); }}>
+          <View style={styles.sheetWrap}>
+            <KeyboardAvoidingView behavior="padding" style={styles.sheet}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                <Text style={styles.sheetTitle}>身体信息</Text>
+                <Text style={styles.sheetLabel}>性别</Text>
+                <View style={styles.segGroup}>
+                  {(['male', 'female'] as const).map((g) => (
+                    <TouchableOpacity
+                      key={g}
+                      style={[styles.segBtn, bodyProfile.gender === g && styles.segBtnActive]}
+                      onPress={() => setBodyProfileLocal({ ...bodyProfile, gender: g })}
+                    >
+                      <Text style={[styles.segText, bodyProfile.gender === g && styles.segTextActive]}>
+                        {g === 'male' ? '男' : '女'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.sheetLabel}>年龄</Text>
+                <TextInput
+                  style={styles.inputBox}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                  blurOnSubmit
+                  value={String(bodyProfile.age)}
+                  onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, age: parseInt(v || '0', 10) })}
+                />
+                <Text style={styles.sheetLabel}>身高 (cm)</Text>
+                <TextInput
+                  style={styles.inputBox}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                  blurOnSubmit
+                  value={String(bodyProfile.height)}
+                  onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, height: parseInt(v || '0', 10) })}
+                />
+                <Text style={styles.sheetLabel}>体重 (kg)</Text>
+                <TextInput
+                  style={styles.inputBox}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                  blurOnSubmit
+                  value={String(bodyProfile.weight)}
+                  onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, weight: parseInt(v || '0', 10) })}
+                />
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity style={styles.sheetCancel} onPress={() => { Keyboard.dismiss(); setBodyModal(false); }}>
+                    <Text style={styles.sheetCancelText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.sheetSave} onPress={saveBody}>
+                    <Text style={styles.sheetSaveText}>保存</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={{ height: 20 }} />
+              </ScrollView>
+            </KeyboardAvoidingView>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
 
       {/* 加运动记录 Modal */}
       <Modal visible={exModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setExModal(false); }}>
         <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
           <View style={styles.sheetWrap}>
-            <TouchableWithoutFeedback onPress={() => {}}>
-              <View style={styles.sheet}>
+            <KeyboardAvoidingView behavior="padding" style={styles.sheet}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <Text style={styles.sheetTitle}>加运动记录</Text>
                 <Text style={styles.sheetLabel}>类型</Text>
                 <View style={styles.exTypeRow}>
@@ -619,8 +642,22 @@ const HomePage: React.FC = () => {
                     </TouchableOpacity>
                   ))}
                 </View>
+                {exType === '其他' && (
+                  <>
+                    <Text style={styles.sheetLabel}>自定义运动名称</Text>
+                    <TextInput
+                      style={styles.inputBox}
+                      placeholder="例如：爬楼梯 / 椭圆机"
+                      placeholderTextColor="#94A3B8"
+                      value={exCustom}
+                      onChangeText={setExCustom}
+                      returnKeyType="done"
+                      blurOnSubmit
+                    />
+                  </>
+                )}
                 <Text style={styles.sheetLabel}>时长（分钟）</Text>
-                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" value={exDuration} onChangeText={setExDuration} />
+                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" blurOnSubmit value={exDuration} onChangeText={setExDuration} />
                 <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
                   {estimatingEx ? (
                     <ActivityIndicator size="small" color="#fff" />
@@ -629,7 +666,7 @@ const HomePage: React.FC = () => {
                   )}
                 </TouchableOpacity>
                 <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
-                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" value={exKcal} onChangeText={setExKcal} />
+                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" blurOnSubmit value={exKcal} onChangeText={setExKcal} />
                 <View style={styles.sheetActions}>
                   <TouchableOpacity style={styles.sheetCancel} onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
                     <Text style={styles.sheetCancelText}>取消</Text>
@@ -638,8 +675,9 @@ const HomePage: React.FC = () => {
                     <Text style={styles.sheetSaveText}>保存</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
-            </TouchableWithoutFeedback>
+                <View style={{ height: 20 }} />
+              </ScrollView>
+            </KeyboardAvoidingView>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
@@ -1047,6 +1085,19 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
   },
   healthBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '600' },
+  trendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  trendBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '700' },
   healthRow: {
     flexDirection: 'row',
     alignItems: 'center',

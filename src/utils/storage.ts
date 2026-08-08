@@ -919,6 +919,7 @@ export const setLedgerCategories = async (type: LedgerType, list: string[]): Pro
 // ============ 身体信息 & 每日活动量（运动量 TDEE 用）============
 // 单一 key 存「按日期」的 map，便于纳入 ALL_DATA_KEYS 与自动备份。
 const BODY_PROFILE_KEY = 'body_profile';
+const BODY_PROFILE_HISTORY_KEY = 'body_profile_history';
 const DAILY_ACTIVITY_KEY = 'daily_activity';
 
 export interface BodyProfile {
@@ -926,6 +927,16 @@ export interface BodyProfile {
   age: number;
   height: number; // cm
   weight: number; // kg
+}
+
+// 身体信息历史快照（每次保存身体信息都追加一条，用于趋势折线图）
+export interface BodyProfileSnapshot {
+  date: string; // YYYY-MM-DD
+  gender: 'male' | 'female';
+  age: number;
+  height: number; // cm
+  weight: number; // kg
+  bmi: number; // 由身高体重算出
 }
 export interface ExerciseRecord {
   id: string;
@@ -952,9 +963,31 @@ export const getBodyProfile = async (): Promise<BodyProfile | null> => {
 export const setBodyProfile = async (p: BodyProfile): Promise<void> => {
   try {
     await AsyncStorage.setItem(BODY_PROFILE_KEY, JSON.stringify(p));
+    // 同时追加一条历史快照（去重：同日只保留最后一次）
+    const bmi = p.height > 0 ? Math.round((p.weight / (p.height / 100) / (p.height / 100)) * 10) / 10 : 0;
+    const date = toDateStr(new Date());
+    const snap: BodyProfileSnapshot = { date, gender: p.gender, age: p.age, height: p.height, weight: p.weight, bmi };
+    const rawH = await AsyncStorage.getItem(BODY_PROFILE_HISTORY_KEY);
+    const history: BodyProfileSnapshot[] = rawH ? JSON.parse(rawH) : [];
+    const idx = history.findIndex((h) => h.date === date);
+    if (idx >= 0) history[idx] = snap;
+    else history.push(snap);
+    history.sort((a, b) => (a.date < b.date ? -1 : 1));
+    await AsyncStorage.setItem(BODY_PROFILE_HISTORY_KEY, JSON.stringify(history));
     autoBackup();
   } catch (error) {
     console.error('Failed to save body profile:', error);
+  }
+};
+
+export const getBodyProfileHistory = async (): Promise<BodyProfileSnapshot[]> => {
+  try {
+    const raw = await AsyncStorage.getItem(BODY_PROFILE_HISTORY_KEY);
+    const list: BodyProfileSnapshot[] = raw ? JSON.parse(raw) : [];
+    return list.sort((a, b) => (a.date < b.date ? -1 : 1));
+  } catch (error) {
+    console.error('Failed to get body profile history:', error);
+    return [];
   }
 };
 
