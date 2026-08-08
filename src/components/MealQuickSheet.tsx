@@ -24,6 +24,7 @@ import {
   saveMealNutrition,
   estimateDayMeals,
   MealContext,
+  PROTEIN_TARGET,
 } from '../utils/nutrition';
 import { getApiKey, getHealthDaily, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
@@ -96,6 +97,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   const [estimatingAll, setEstimatingAll] = useState(false);
   const [estProgress, setEstProgress] = useState('');
   const [estMsg, setEstMsg] = useState('');
+  // 今日「已摄入 vs TDEE」进度条
+  const [intake, setIntake] = useState<{ calories: number; protein: number }>({ calories: 0, protein: 0 });
+  const [tdee, setTdee] = useState(0);
   // 哪些餐展开了「逐样食物明细」
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -113,8 +117,13 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       const list = await getMealsByDate(dateStr);
       setEntries(list);
       buildMealContext(dateStr).then((c) => {
-        if (c) setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal' + (c.steps != null ? ' · 手环 ' + c.steps + ' 步' : ''));
-        else setEnergySummary('');
+        if (c) {
+          setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal' + (c.steps != null ? ' · 手环 ' + c.steps + ' 步' : ''));
+          setTdee(c.tdee || 0);
+        } else {
+          setEnergySummary('');
+          setTdee(0);
+        }
       });
       const byType = (t: MealType) => list.find((m) => m.type === t)?.content || '';
       setContents({ breakfast: byType('breakfast'), lunch: byType('lunch'), dinner: byType('dinner'), snack: '' });
@@ -122,6 +131,13 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       setEstMsg('');
     })();
   }, [visible, dateStr]);
+
+  // 根据当前各餐的估算营养，实时汇总「今日已摄入」热量/蛋白，驱动进度条
+  useEffect(() => {
+    const c = entries.reduce((s, m) => s + (m.nutrition?.calories || 0), 0);
+    const p = entries.reduce((s, m) => s + (m.nutrition?.protein || 0), 0);
+    setIntake({ calories: Math.round(c), protein: Math.round(p) });
+  }, [entries]);
 
   useEffect(() => {
     if (!visible) return;
@@ -247,6 +263,31 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setSnackList((s) => s.map((x, i) => (i === idx ? { ...x, content: v } : x)));
   const removeSnack = (idx: number) => setSnackList((s) => s.filter((_, i) => i !== idx));
 
+  // 「今日已摄入 vs TDEE」进度条：吃了多少、还能吃多少
+  const renderIntakeBar = () => {
+    const pct = tdee > 0 ? Math.min(100, Math.round((intake.calories / tdee) * 100)) : 0;
+    const over = intake.calories > tdee;
+    const remaining = tdee - intake.calories;
+    const barColor = over ? '#EF4444' : '#22C55E';
+    return (
+      <View style={styles.intakeCard}>
+        <View style={styles.intakeTopRow}>
+          <Text style={styles.intakeTitle}>🍽️ 今日热量</Text>
+          <Text style={styles.intakeNum}>{intake.calories} / {tdee} kcal</Text>
+        </View>
+        <View style={styles.barTrack}>
+          <View style={[styles.barFill, { width: `${pct}%`, backgroundColor: barColor }]} />
+        </View>
+        <View style={styles.intakeBottomRow}>
+          <Text style={[styles.intakeRemain, over && styles.intakeOver]}>
+            {over ? '已超出 ' + Math.abs(remaining) + ' kcal' : '还可吃 ' + remaining + ' kcal'}
+          </Text>
+          <Text style={styles.intakeProtein}>蛋白 {intake.protein}/{PROTEIN_TARGET}g</Text>
+        </View>
+      </View>
+    );
+  };
+
   const renderMealBlock = (f: { key: MealType; label: string; icon: string; placeholder: string }) => {
     const entry = entries.find((m) => m.type === f.key && m.date === dateStr);
     const estimating = estimatingMealId === entry?.id;
@@ -321,6 +362,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
               bounces={false}
             >
               {energySummary ? <Text style={styles.energyHint}>{energySummary}</Text> : null}
+              {tdee > 0 ? renderIntakeBar() : null}
               <TouchableOpacity style={styles.dateRow} onPress={() => setShowDatePicker(true)}>
                 <Ionicons name="calendar-outline" size={15} color={COLORS.primary} />
                 <Text style={styles.dateText}>{formatDate(dateStr)}</Text>
@@ -713,6 +755,59 @@ const styles = StyleSheet.create({
   actionSaveText: {
     color: '#fff',
     fontSize: 15,
+    fontWeight: '600',
+  },
+  intakeCard: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  intakeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  intakeTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  intakeNum: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  barTrack: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#EAE6F2',
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: 5,
+  },
+  intakeBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  intakeRemain: {
+    fontSize: 12,
+    color: '#15803D',
+    fontWeight: '600',
+  },
+  intakeOver: {
+    color: '#EF4444',
+  },
+  intakeProtein: {
+    fontSize: 12,
+    color: COLORS.textLight,
     fontWeight: '600',
   },
 });
