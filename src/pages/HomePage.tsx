@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -601,43 +601,47 @@ const HomePage: React.FC = () => {
       </Modal>
 
       {/* 加运动记录 Modal */}
-      <Modal visible={exModal} transparent animationType="slide">
-        <View style={styles.sheetWrap}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>加运动记录</Text>
-            <Text style={styles.sheetLabel}>类型</Text>
-            <View style={styles.exTypeRow}>
-              {EXERCISE_TYPES.map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
-                  onPress={() => setExType(t)}
-                >
-                  <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
+      <Modal visible={exModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setExModal(false); }}>
+        <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
+          <View style={styles.sheetWrap}>
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View style={styles.sheet}>
+                <Text style={styles.sheetTitle}>加运动记录</Text>
+                <Text style={styles.sheetLabel}>类型</Text>
+                <View style={styles.exTypeRow}>
+                  {EXERCISE_TYPES.map((t) => (
+                    <TouchableOpacity
+                      key={t}
+                      style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
+                      onPress={() => setExType(t)}
+                    >
+                      <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.sheetLabel}>时长（分钟）</Text>
+                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" value={exDuration} onChangeText={setExDuration} />
+                <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
+                  {estimatingEx ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.estimateBtnText}>AI 估算消耗</Text>
+                  )}
                 </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>时长（分钟）</Text>
-            <TextInput style={styles.inputBox} keyboardType="numeric" value={exDuration} onChangeText={setExDuration} />
-            <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
-              {estimatingEx ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.estimateBtnText}>AI 估算消耗</Text>
-              )}
-            </TouchableOpacity>
-            <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
-            <TextInput style={styles.inputBox} keyboardType="numeric" value={exKcal} onChangeText={setExKcal} />
-            <View style={styles.sheetActions}>
-              <TouchableOpacity style={styles.sheetCancel} onPress={() => setExModal(false)}>
-                <Text style={styles.sheetCancelText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.sheetSave} onPress={confirmEx}>
-                <Text style={styles.sheetSaveText}>保存</Text>
-              </TouchableOpacity>
-            </View>
+                <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
+                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" value={exKcal} onChangeText={setExKcal} />
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity style={styles.sheetCancel} onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
+                    <Text style={styles.sheetCancelText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.sheetSave} onPress={confirmEx}>
+                    <Text style={styles.sheetSaveText}>保存</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
     </>
   );

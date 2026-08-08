@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   Modal,
   ActivityIndicator,
+  AppState,
   TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -96,6 +97,14 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     })();
   }, [visible, dateStr]);
 
+  useEffect(() => {
+    if (!visible) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resumeEstimation();
+    });
+    return () => sub.remove();
+  }, [visible, entries, dateStr]);
+
   const setContent = (t: MealType, v: string) => setContents((c) => ({ ...c, [t]: v }));
 
   const doSave = async () => {
@@ -178,6 +187,29 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     onSaved?.();
     setEstimatingAll(false);
     setEstProgress('');
+  };
+
+  const resumingRef = useRef(false);
+  // 回到前台时，把后台被挂起、没算完的餐自动补完（iOS 后台会暂停网络请求）
+  const resumeEstimation = async () => {
+    if (resumingRef.current) return;
+    const hasKey = await getApiKey();
+    if (!hasKey) return;
+    const pending = entries.filter((e) => e.content && e.content.trim() && !e.nutrition);
+    if (pending.length === 0) return;
+    resumingRef.current = true;
+    setEstimatingAll(true);
+    setEstProgress(`估算中 0/${pending.length}`);
+    try {
+      const next = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`));
+      setEntries(next.filter((m) => m.date === dateStr));
+      onSaved?.();
+    } catch (e) {
+      console.error('[MealQuickSheet] resume estimation failed', e);
+    }
+    setEstimatingAll(false);
+    setEstProgress('');
+    resumingRef.current = false;
   };
 
   const addSnack = () =>
