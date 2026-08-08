@@ -23,10 +23,31 @@ import {
   estimateMealNutrition,
   saveMealNutrition,
   estimateDayMeals,
+  MealContext,
 } from '../utils/nutrition';
-import { getApiKey } from '../utils/storage';
+import { getApiKey, getHealthDaily, getBodyProfile } from '../utils/storage';
+import { calcDayEnergy } from '../utils/activity';
 import CalendarPicker, { WEEK_LABELS } from './CalendarPicker';
 import NutritionDetail from './NutritionDetail';
+
+// 计算当天「身体+运动+TDEE+手环」上下文，传给 AI 估算，让三餐建议带上运动数据
+const buildMealContext = async (date: string): Promise<MealContext | undefined> => {
+  try {
+    const energy = await calcDayEnergy(date);
+    const health = await getHealthDaily(date);
+    return {
+      bmr: energy.bmr,
+      tdee: energy.tdee,
+      exerciseKcal: energy.exerciseKcal,
+      baseLevel: energy.baseLevel,
+      steps: health?.steps ?? null,
+      activeKcal: health?.activeKcal ?? null,
+      sleepMin: health?.sleepMin ?? null,
+    };
+  } catch (e) {
+    return undefined;
+  }
+};
 
 interface Props {
   visible: boolean;
@@ -66,6 +87,7 @@ interface SnackInput {
 
 const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) => {
   const [dateStr, setDateStr] = useState(date);
+  const [energySummary, setEnergySummary] = useState('');
   const [contents, setContents] = useState<Record<MealType, string>>({ breakfast: '', lunch: '', dinner: '', snack: '' });
   const [snackList, setSnackList] = useState<SnackInput[]>([]);
   const [entries, setEntries] = useState<MealEntry[]>([]);
@@ -90,6 +112,10 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     (async () => {
       const list = await getMealsByDate(dateStr);
       setEntries(list);
+      buildMealContext(dateStr).then((c) => {
+        if (c) setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal' + (c.steps != null ? ' · 手环 ' + c.steps + ' 步' : ''));
+        else setEnergySummary('');
+      });
       const byType = (t: MealType) => list.find((m) => m.type === t)?.content || '';
       setContents({ breakfast: byType('breakfast'), lunch: byType('lunch'), dinner: byType('dinner'), snack: '' });
       setSnackList(list.filter((m) => m.type === 'snack').map((m) => ({ id: m.id, content: m.content })));
@@ -141,7 +167,8 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     }
     setEstimatingMealId(id);
     setEstMsg('');
-    const { result, status } = await estimateMealNutrition({ ...entry, id });
+    const ctx = await buildMealContext(dateStr);
+    const { result, status } = await estimateMealNutrition({ ...entry, id }, ctx);
     if (status === 'ok' && result) {
       const next = await saveMealNutrition(id, result);
       setEntries(next.filter((m) => m.date === dateStr));
@@ -172,7 +199,8 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     }
     setEstimatingAll(true);
     setEstMsg('');
-    const next = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`));
+    const ctx = await buildMealContext(dateStr);
+    const next = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx);
     const dayList = next.filter((m) => m.date === dateStr);
     setEntries(dayList);
     // 全部估算完，把有结果的餐都展开明细
@@ -201,7 +229,8 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstimatingAll(true);
     setEstProgress(`估算中 0/${pending.length}`);
     try {
-      const next = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`));
+      const ctx = await buildMealContext(dateStr);
+      const next = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx);
       setEntries(next.filter((m) => m.date === dateStr));
       onSaved?.();
     } catch (e) {
@@ -291,6 +320,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
               keyboardShouldPersistTaps="handled"
               bounces={false}
             >
+              {energySummary ? <Text style={styles.energyHint}>{energySummary}</Text> : null}
               <TouchableOpacity style={styles.dateRow} onPress={() => setShowDatePicker(true)}>
                 <Ionicons name="calendar-outline" size={15} color={COLORS.primary} />
                 <Text style={styles.dateText}>{formatDate(dateStr)}</Text>
@@ -461,6 +491,12 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 8,
+  },
+  energyHint: {
+    fontSize: 12,
+    color: COLORS.primary,
+    marginBottom: 6,
+    paddingHorizontal: 16,
   },
   dateRow: {
     flexDirection: 'row',

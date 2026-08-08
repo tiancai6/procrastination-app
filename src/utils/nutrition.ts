@@ -6,6 +6,38 @@ import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy } f
 
 const MEALS_KEY = 'meal_entries';
 
+// 当日身体/运动/手环上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
+export interface MealContext {
+  bmr: number;
+  tdee: number;
+  exerciseKcal: number;
+  baseLevel: 'sedentary' | 'light' | 'moderate' | 'high';
+  steps?: number | null;
+  activeKcal?: number | null;
+  sleepMin?: number | null;
+}
+
+const BASE_LEVEL_LABEL: Record<MealContext['baseLevel'], string> = {
+  sedentary: '久坐少动',
+  light: '轻度活动',
+  moderate: '中度活动',
+  high: '高强度活动',
+};
+
+// 把当日身体/运动/手环数据拼成一段中文，注入营养估算 prompt。
+const buildMealContextText = (ctx: MealContext): string => {
+  const parts: string[] = [];
+  parts.push('【今日身体与运动情况，用于判断这顿饭是否合适】');
+  parts.push('- 基础代谢(BMR)：约 ' + ctx.bmr + ' kcal');
+  parts.push('- 今日运动消耗：约 ' + ctx.exerciseKcal + ' kcal（基础活动强度：' + BASE_LEVEL_LABEL[ctx.baseLevel] + '）');
+  parts.push('- 今日可摄入总量(TDEE，含运动)：约 ' + ctx.tdee + ' kcal');
+  if (ctx.steps != null) parts.push('- 手环步数：' + ctx.steps + ' 步');
+  if (ctx.activeKcal != null) parts.push('- 手环活动消耗：' + ctx.activeKcal + ' kcal');
+  if (ctx.sleepMin != null) parts.push('- 昨晚睡眠：' + Math.floor(ctx.sleepMin / 60) + ' 小时 ' + (ctx.sleepMin % 60) + ' 分');
+  parts.push('请结合「今日可摄入总量 ' + ctx.tdee + ' kcal」判断这顿饭的 adequacy：运动消耗大可放宽、久坐少动要更克制；在 comment 里点明这顿与今日运动是否匹配、建议多吃还是少吃。');
+  return parts.join('\n');
+};
+
 // 每日营养推荐量（用于达标/超标判断，可按需调整）
 export const PROTEIN_TARGET = 60; // g
 export const CALORIE_TARGET = 2000; // kcal
@@ -188,7 +220,9 @@ const NUTRITION_SYSTEM_PROMPT = `你是一位营养师。用户会告诉你某�
 4. 顶层的 protein/calories/fat/carbs/fiber **必须等于 items 各项之和**（允许微小取整误差）。
 5. water 是这顿摄入的液体量(ml)，如豆浆/汤/牛奶；没有则填 0。
 参考全天推荐量：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、膳食纤维约25g、饮水约1500ml；按这顿占全天的合理比例判断 adequacy。
-基于常见食物成分表合理估算，不要编造具体品牌的营养标签；只输出 JSON。`;
+基于常见食物成分表合理估算，不要编造具体品牌的营养标签；只输出 JSON。
+如果用户在该餐消息里提供了「当日身体与运动情况」（基础代谢、运动消耗、今日可摄入总量TDEE、手环步数/消耗/睡眠等），请务必据此判断 adequacy：把这顿的热量与「今日可摄入总量」的对应比例对照，运动量消耗大时可放宽、久坐少动时要更克制；并在 comment 里点明这顿与今日运动是否匹配、建议用户多吃还是少吃。
+`;
 
 export interface EstimateResult {
   result: MealNutrition | null;
@@ -238,7 +272,7 @@ const normalizeNutrition = (raw: any): MealNutrition => {
 // 大部分情况能自己恢复，避免你看到冷冰冰的「估算失败」。
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export const estimateMealNutrition = async (entry: MealEntry): Promise<EstimateResult> => {
+export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext): Promise<EstimateResult> => {
   const cfg = await getActiveConfig(false);
   if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
@@ -252,7 +286,7 @@ export const estimateMealNutrition = async (entry: MealEntry): Promise<EstimateR
           { role: 'system', content: NUTRITION_SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}\n请输出这顿的营养估算 JSON。`,
+            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}\n请输出这顿的营养估算 JSON。`,
           },
         ],
         { temperature: 0.5, maxTokens: 1000 },
@@ -283,6 +317,7 @@ const CONCURRENCY = 2;
 const estimateInParallel = async (
   targets: MealEntry[],
   onEach?: (done: number, total: number) => void,
+  ctx?: MealContext,
 ): Promise<Map<string, MealNutrition>> => {
   const out = new Map<string, MealNutrition>();
   let done = 0;
@@ -291,7 +326,7 @@ const estimateInParallel = async (
   const worker = async () => {
     while (cursor < targets.length) {
       const e = targets[cursor++];
-      const { result } = await estimateMealNutrition(e);
+      const { result } = await estimateMealNutrition(e, ctx);
       if (result) out.set(e.id, result);
       done += 1;
       onEach?.(done, targets.length);
@@ -306,9 +341,10 @@ const estimateInParallel = async (
 export const estimateDayMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
+  ctx?: MealContext,
 ): Promise<MealEntry[]> => {
   const valid = entries.filter((e) => e.content && e.content.trim());
-  const results = await estimateInParallel(valid, onEach);
+  const results = await estimateInParallel(valid, onEach, ctx);
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
@@ -320,9 +356,10 @@ export const estimateDayMeals = async (
 export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
+  ctx?: MealContext,
 ): Promise<number> => {
   const missing = entries.filter((m) => m.content && m.content.trim() && !m.nutrition);
-  const results = await estimateInParallel(missing, onEach);
+  const results = await estimateInParallel(missing, onEach, ctx);
   if (results.size === 0) return 0;
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
@@ -334,12 +371,16 @@ export const estimateMissingMeals = async (
 export const requestMealAdjustmentAdvice = async (
   mealsSummary: string,
   currentText: string,
+  ctx?: MealContext,
 ): Promise<{ text: string; status: 'ok' | 'nokey' | 'error' }> => {
   const cfg = await getActiveConfig(false);
   if (!cfg) return { text: '', status: 'nokey' };
+  const ctxText = ctx
+    ? '\n【今日运动情况】基础代谢约' + ctx.bmr + 'kcal、运动消耗约' + ctx.exerciseKcal + 'kcal、今日可摄入总量(TDEE)约' + ctx.tdee + 'kcal' + (ctx.steps != null ? '、手环步数' + ctx.steps + '步' : '') + '。请结合今日运动消耗给出饮食调整建议。'
+    : '';
   const prompt = `你是营养师。以下是某段时间的每日三餐记录与营养摄入情况：
 ${mealsSummary}
-当前摄入情况：${currentText}
+当前摄入情况：${currentText}${ctxText}
 请综合判断「蛋白质 / 热量 / 脂肪 / 碳水 / 膳食纤维 / 饮水」各项是否达标，重点指出今天还缺什么（如蔬菜少→纤维/维C不足，喝水少→饮水不足）：
 1）接下来具体该多吃或少吃什么（含具体食物与大致分量）；
 2）给出 2-3 条可落地的饮食调整方案；
