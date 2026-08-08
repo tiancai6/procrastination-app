@@ -927,6 +927,14 @@ export interface BodyProfile {
   age: number;
   height: number; // cm
   weight: number; // kg
+  // 体成分（来自体脂秤截图识别，可选）
+  bodyFatPct?: number;   // 体脂率 %
+  muscleMass?: number;   // 肌肉量 kg
+  boneMass?: number;     // 骨量 kg
+  waterPct?: number;     // 水分 %
+  visceralFat?: number;  // 内脏脂肪等级
+  bmr?: number;          // 基础代谢 kcal
+  bodyAge?: number;      // 身体年龄 岁
 }
 
 // 身体信息历史快照（每次保存身体信息都追加一条，用于趋势折线图）
@@ -937,6 +945,14 @@ export interface BodyProfileSnapshot {
   height: number; // cm
   weight: number; // kg
   bmi: number; // 由身高体重算出
+  // 体成分（用于趋势折线图，可选）
+  bodyFatPct?: number;
+  muscleMass?: number;
+  boneMass?: number;
+  waterPct?: number;
+  visceralFat?: number;
+  bmr?: number;
+  bodyAge?: number;
 }
 export interface ExerciseRecord {
   id: string;
@@ -966,7 +982,11 @@ export const setBodyProfile = async (p: BodyProfile): Promise<void> => {
     // 同时追加一条历史快照（去重：同日只保留最后一次）
     const bmi = p.height > 0 ? Math.round((p.weight / (p.height / 100) / (p.height / 100)) * 10) / 10 : 0;
     const date = toDateStr(new Date());
-    const snap: BodyProfileSnapshot = { date, gender: p.gender, age: p.age, height: p.height, weight: p.weight, bmi };
+    const snap: BodyProfileSnapshot = {
+      date, gender: p.gender, age: p.age, height: p.height, weight: p.weight, bmi,
+      bodyFatPct: p.bodyFatPct, muscleMass: p.muscleMass, boneMass: p.boneMass,
+      waterPct: p.waterPct, visceralFat: p.visceralFat, bmr: p.bmr, bodyAge: p.bodyAge,
+    };
     const rawH = await AsyncStorage.getItem(BODY_PROFILE_HISTORY_KEY);
     const history: BodyProfileSnapshot[] = rawH ? JSON.parse(rawH) : [];
     const idx = history.findIndex((h) => h.date === date);

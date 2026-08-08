@@ -13,6 +13,7 @@ import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import { getTodayExpense, getTodayIncome, getMonthExpense, formatMoney } from '../utils/ledger';
 import { getMealsByDate, getNutritionForDate, estimateDayMeals, NUTRITION_TARGETS } from '../utils/nutrition';
+import { pickBodyImage, ocrBodyComposition } from '../utils/bodyOcr';
 import {
   getApiKey,
   getBodyProfile,
@@ -72,6 +73,8 @@ const HomePage: React.FC = () => {
   const [activity, setActivity] = useState<DailyActivity>({ baseLevel: 'sedentary', exercises: [] });
   const [bodyModal, setBodyModal] = useState(false);
   const [bodyProfile, setBodyProfileLocal] = useState<BodyProfile>(DEFAULT_BODY_PROFILE);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrMsg, setOcrMsg] = useState('');
   const [exModal, setExModal] = useState(false);
   const [trendVisible, setTrendVisible] = useState(false);
   const [exType, setExType] = useState(EXERCISE_TYPES[0]);
@@ -200,6 +203,54 @@ const HomePage: React.FC = () => {
     setDayEnergy(await calcDayEnergy(toDateStr(new Date())));
     setBodyModal(false);
   };
+
+  // 体成分报告拍照 / 选图识别（视觉模型 OCR）
+  const runOcr = async (useCamera: boolean) => {
+    const hasKey = await getApiKey();
+    if (!hasKey) { setOcrMsg('未设置 API Key，请先到「我的」页面填模型'); return; }
+    setOcrLoading(true);
+    setOcrMsg('');
+    try {
+      const b64 = await pickBodyImage(useCamera);
+      if (!b64) { setOcrLoading(false); return; }
+      const data = await ocrBodyComposition(b64);
+      setBodyProfileLocal((prev) => ({
+        ...prev,
+        ...(data.bodyFatPct != null ? { bodyFatPct: data.bodyFatPct } : {}),
+        ...(data.muscleMass != null ? { muscleMass: data.muscleMass } : {}),
+        ...(data.boneMass != null ? { boneMass: data.boneMass } : {}),
+        ...(data.waterPct != null ? { waterPct: data.waterPct } : {}),
+        ...(data.visceralFat != null ? { visceralFat: data.visceralFat } : {}),
+        ...(data.bmr != null ? { bmr: data.bmr } : {}),
+        ...(data.bodyAge != null ? { bodyAge: data.bodyAge } : {}),
+        ...(data.weight != null ? { weight: data.weight } : {}),
+      }));
+      setOcrMsg('识别完成，已自动填入，请核对后点保存');
+    } catch (e: any) {
+      setOcrMsg(e && e.message ? e.message : '识别失败，请检查网络或换张清晰图重试');
+    }
+    setOcrLoading(false);
+  };
+
+  // 体成分可编辑字段（识别后仍可手动修改；decimal-pad + 可清空 + 可退出输入）
+  const renderBodyField = (
+    label: string,
+    value: number | undefined,
+    key: keyof BodyProfile,
+    unit: string,
+  ) => (
+    <View>
+      <Text style={styles.sheetLabel}>{label}{unit ? ' (' + unit + ')' : ''}</Text>
+      <TextInput
+        style={styles.inputBox}
+        keyboardType="decimal-pad"
+        returnKeyType="done"
+        blurOnSubmit
+        value={value != null ? String(value) : ''}
+        onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, [key]: v === '' ? undefined : parseFloat(v) } as BodyProfile)}
+      />
+    </View>
+  );
 
   // 今日还缺哪些营养素（规则判定，离线可用）
   const deficitChips = useMemo(() => {
@@ -567,6 +618,23 @@ const HomePage: React.FC = () => {
             <KeyboardAvoidingView behavior="padding" style={styles.sheet}>
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <Text style={styles.sheetTitle}>身体信息</Text>
+                <View style={styles.ocrBar}>
+                  <TouchableOpacity style={styles.ocrBtn} onPress={() => runOcr(true)} disabled={ocrLoading}>
+                    <Ionicons name="camera-outline" size={15} color="#8B5CF6" />
+                    <Text style={styles.ocrBtnText}>拍照识别</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.ocrBtn} onPress={() => runOcr(false)} disabled={ocrLoading}>
+                    <Ionicons name="images-outline" size={15} color="#8B5CF6" />
+                    <Text style={styles.ocrBtnText}>从相册选择</Text>
+                  </TouchableOpacity>
+                </View>
+                {ocrLoading ? (
+                  <View style={styles.ocrLoading}>
+                    <ActivityIndicator size="small" color="#8B5CF6" />
+                    <Text style={styles.ocrLoadingText}>正在识别体成分报告…</Text>
+                  </View>
+                ) : null}
+                {ocrMsg ? <Text style={styles.ocrMsg}>{ocrMsg}</Text> : null}
                 <Text style={styles.sheetLabel}>性别</Text>
                 <View style={styles.segGroup}>
                   {(['male', 'female'] as const).map((g) => (
@@ -608,6 +676,13 @@ const HomePage: React.FC = () => {
                   value={String(bodyProfile.weight)}
                   onChangeText={(v) => setBodyProfileLocal({ ...bodyProfile, weight: parseInt(v || '0', 10) })}
                 />
+                {renderBodyField('体脂率', bodyProfile.bodyFatPct, 'bodyFatPct', '%')}
+                {renderBodyField('肌肉量', bodyProfile.muscleMass, 'muscleMass', 'kg')}
+                {renderBodyField('骨量', bodyProfile.boneMass, 'boneMass', 'kg')}
+                {renderBodyField('水分', bodyProfile.waterPct, 'waterPct', '%')}
+                {renderBodyField('内脏脂肪等级', bodyProfile.visceralFat, 'visceralFat', '')}
+                {renderBodyField('基础代谢', bodyProfile.bmr, 'bmr', 'kcal')}
+                {renderBodyField('身体年龄', bodyProfile.bodyAge, 'bodyAge', '岁')}
                 <View style={styles.sheetActions}>
                   <TouchableOpacity style={styles.sheetCancel} onPress={() => { Keyboard.dismiss(); setBodyModal(false); }}>
                     <Text style={styles.sheetCancelText}>取消</Text>
@@ -1183,6 +1258,43 @@ const styles = StyleSheet.create({
     backgroundColor: '#8B5CF6',
   },
   estimateBtnText: { color: '#fff', fontSize: 13.5, fontWeight: '600' },
+  ocrBar: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  ocrBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#F5F0FF',
+    borderWidth: 0.5,
+    borderColor: '#DDD0FB',
+  },
+  ocrBtnText: {
+    color: '#8B5CF6',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  ocrLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  ocrLoadingText: {
+    fontSize: 12.5,
+    color: COLORS.primary,
+  },
+  ocrMsg: {
+    fontSize: 12.5,
+    color: COLORS.textLight,
+    marginBottom: 10,
+  },
 });
 
 export default HomePage;

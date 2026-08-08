@@ -9,6 +9,7 @@ const MEALS_KEY = 'meal_entries';
 // 当日身体/运动/手环上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
 export interface MealContext {
   bmr: number;
+  weight: number; // 体重 kg（用于动态蛋白目标）
   tdee: number;
   exerciseKcal: number;
   baseLevel: 'sedentary' | 'light' | 'moderate' | 'high';
@@ -39,7 +40,12 @@ const buildMealContextText = (ctx: MealContext): string => {
 };
 
 // 每日营养推荐量（用于达标/超标判断，可按需调整）
-export const PROTEIN_TARGET = 60; // g
+export const PROTEIN_TARGET = 60; // g（兜底：无体重数据时）
+// 蛋白目标按体重动态算：一般推荐每公斤体重约 1.0~1.2g，这里取 1.1g 取整，且不低于兜底值。
+export const calcProteinTarget = (weight?: number | null): number => {
+  if (!weight || weight <= 0) return PROTEIN_TARGET;
+  return Math.max(PROTEIN_TARGET, Math.round(weight * 1.1));
+};
 export const CALORIE_TARGET = 2000; // kcal
 export const NUTRITION_TARGETS = {
   protein: PROTEIN_TARGET, // g

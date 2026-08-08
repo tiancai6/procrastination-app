@@ -24,7 +24,7 @@ import {
   saveMealNutrition,
   estimateDayMeals,
   MealContext,
-  PROTEIN_TARGET,
+  calcProteinTarget,
 } from '../utils/nutrition';
 import { getApiKey, getHealthDaily, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
@@ -36,8 +36,10 @@ const buildMealContext = async (date: string): Promise<MealContext | undefined> 
   try {
     const energy = await calcDayEnergy(date);
     const health = await getHealthDaily(date);
+    const p = await getBodyProfile();
     return {
       bmr: energy.bmr,
+      weight: p?.weight ?? 0,
       tdee: energy.tdee,
       exerciseKcal: energy.exerciseKcal,
       baseLevel: energy.baseLevel,
@@ -100,6 +102,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   // 今日「已摄入 vs TDEE」进度条
   const [intake, setIntake] = useState<{ calories: number; protein: number }>({ calories: 0, protein: 0 });
   const [tdee, setTdee] = useState(0);
+  const [proteinTarget, setProteinTarget] = useState(60);
   // 哪些餐展开了「逐样食物明细」
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -120,9 +123,11 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
         if (c) {
           setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal' + (c.steps != null ? ' · 手环 ' + c.steps + ' 步' : ''));
           setTdee(c.tdee || 0);
+          setProteinTarget(calcProteinTarget(c.weight));
         } else {
           setEnergySummary('');
           setTdee(0);
+          setProteinTarget(60);
         }
       });
       const byType = (t: MealType) => list.find((m) => m.type === t)?.content || '';
@@ -282,7 +287,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
           <Text style={[styles.intakeRemain, over && styles.intakeOver]}>
             {over ? '已超出 ' + Math.abs(remaining) + ' kcal' : '还可吃 ' + remaining + ' kcal'}
           </Text>
-          <Text style={styles.intakeProtein}>蛋白 {intake.protein}/{PROTEIN_TARGET}g</Text>
+          <Text style={styles.intakeProtein}>蛋白 {intake.protein}/{proteinTarget}g</Text>
         </View>
       </View>
     );
