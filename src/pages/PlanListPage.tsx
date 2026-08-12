@@ -75,6 +75,12 @@ const PlanListPage: React.FC = () => {
     reload();
   };
 
+  // 规划日历补打卡：切换任意日期某习惯的打卡状态（用于补打卡 / 取消补打卡）
+  const onToggleCheckin = async (habitId: string, date: string) => {
+    await toggleHabitCheckin(habitId, date);
+    reload();
+  };
+
   const isCheckedToday = (habitId: string) => checkins.some((c) => c.habitId === habitId && c.date === todayStr);
 
   const freqText = (h: Habit) =>
@@ -246,6 +252,7 @@ const PlanListPage: React.FC = () => {
             checkins={checkins}
             onReminderPress={(r) => openReminder(r)}
             onHabitPress={(h) => openHabit(h)}
+            onToggleCheckin={onToggleCheckin}
           />
         </ScrollView>
       )}

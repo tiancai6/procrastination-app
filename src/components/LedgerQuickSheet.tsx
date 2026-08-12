@@ -26,6 +26,7 @@ interface Props {
   onSaved?: () => void;
   defaultType?: LedgerType;
   entry?: LedgerEntry | null; // 传入则为编辑模式
+  defaultOccurredAt?: number; // 记一笔时默认记账时间（用于日历补记账，指定过去某天）
 }
 
 const OP_TO_CHAR: Record<string, string> = { '÷': '/', '×': '*', '−': '-' };
@@ -133,7 +134,7 @@ const fmtDate = (ts: number) => {
   return `${isToday ? '今天 ' : ''}${base} ${time}`;
 };
 
-const LedgerQuickSheet: React.FC<Props> = ({ visible, onClose, onSaved, defaultType = 'expense', entry }) => {
+const LedgerQuickSheet: React.FC<Props> = ({ visible, onClose, onSaved, defaultType = 'expense', entry, defaultOccurredAt }) => {
   const [type, setType] = useState<LedgerType>(defaultType);
   const [expr, setExpr] = useState('');
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
@@ -181,12 +182,12 @@ const LedgerQuickSheet: React.FC<Props> = ({ visible, onClose, onSaved, defaultT
     setCategory(list[0] || '');
   };
 
-  const resetState = (t: LedgerType) => {
+  const resetState = (t: LedgerType, ts?: number) => {
     setType(t);
     setExpr('');
     setCategory(cats.length ? cats[0] : t === 'expense' ? EXPENSE_CATEGORIES[0] : INCOME_CATEGORIES[0]);
     setNote('');
-    setStartTs(Date.now());
+    setStartTs(ts ?? Date.now());
   };
 
   useEffect(() => {
@@ -198,7 +199,7 @@ const LedgerQuickSheet: React.FC<Props> = ({ visible, onClose, onSaved, defaultT
       setNote(entry.note || '');
       setStartTs(entry.occurredAt);
     } else {
-      resetState(defaultType);
+      resetState(defaultType, defaultOccurredAt);
     }
     // 载入当前类型的自定义分类
     (async () => {

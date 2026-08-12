@@ -11,6 +11,8 @@ interface Props {
   checkins: HabitCheckin[];
   onReminderPress?: (r: Reminder) => void;
   onHabitPress?: (h: Habit) => void;
+  // 选中某天后，切换该天某习惯的打卡状态（用于补打卡 / 取消补打卡，支持任意日期）
+  onToggleCheckin?: (habitId: string, date: string) => void;
 }
 
 interface DayAgg {
@@ -28,7 +30,7 @@ const toDateStr = (d: Date): string => {
   return `${y}-${m}-${day}`;
 };
 
-const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminderPress, onHabitPress }) => {
+const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminderPress, onHabitPress, onToggleCheckin }) => {
   const today = new Date();
   const todayStr = toDateStr(today);
   const [mode, setMode] = useState<'month' | 'week'>('month');
@@ -161,8 +163,15 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
   const dayReminders = reminders
     .filter((r) => r.date === selected)
     .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-  const dayCheckins = checkins.filter((c) => c.date === selected);
-  const dayHabitMap = new Map(habits.map((h) => [h.id, h]));
+  const dayCheckinSet = new Set(checkins.filter((c) => c.date === selected).map((c) => c.habitId));
+  // 当天「应打卡」习惯：每日习惯 / 当周几选中 / 或当天已打过卡（便于取消补打卡）
+  const dayHabits = habits.filter(
+    (h) =>
+      h.status === 'active' &&
+      (h.frequency === 'daily' ||
+        h.weekDays.includes(selectedDate.getDay()) ||
+        dayCheckinSet.has(h.id)),
+  );
 
   return (
     <View style={styles.container}>
@@ -238,7 +247,7 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
           {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日 {WEEK_LABELS[selectedDate.getDay()]}
           {selected === todayStr ? ' · 今天' : ''}
         </Text>
-        {dayReminders.length === 0 && dayCheckins.length === 0 && (
+        {dayReminders.length === 0 && dayHabits.length === 0 && (
           <Text style={styles.emptyText}>这一天还没有记录</Text>
         )}
         {dayReminders.map((r) => (
@@ -255,23 +264,48 @@ const CalendarView: React.FC<Props> = ({ reminders, habits, checkins, onReminder
             <Text style={styles.detailTag}>待办</Text>
           </TouchableOpacity>
         ))}
-        {dayCheckins.map((c) => {
-          const h = dayHabitMap.get(c.habitId);
-          if (!h) return null;
-          return (
-            <TouchableOpacity
-              key={c.id}
-              style={styles.detailItem}
-              onPress={() => h && onHabitPress?.(h)}
-            >
-              <Ionicons name="checkmark-circle" size={18} color={h?.color || COLORS.success} />
-              <View style={styles.detailBody}>
-                <Text style={styles.detailText}>{h?.name}</Text>
-              </View>
-              <Text style={[styles.detailTag, { color: h?.color }]}>打卡</Text>
-            </TouchableOpacity>
-          );
-        })}
+
+        {/* 补打卡：选中当天应打卡的习惯，点一下切换打卡状态（支持任意日期） */}
+        <View style={styles.checkinBlock}>
+          <Text style={styles.checkinBlockTitle}>
+            当天习惯{selected === todayStr ? '' : '（补打卡）'}
+          </Text>
+          {dayHabits.length === 0 ? (
+            <Text style={styles.emptyText}>这一天没有应打卡的习惯</Text>
+          ) : (
+            dayHabits.map((h) => {
+              const checked = dayCheckinSet.has(h.id);
+              return (
+                <TouchableOpacity
+                  key={h.id}
+                  style={[styles.detailItem, checked && styles.detailItemDone]}
+                  onPress={() => onToggleCheckin?.(h.id, selected)}
+                >
+                  <Ionicons
+                    name={checked ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={18}
+                    color={checked ? h.color || COLORS.success : COLORS.textLight}
+                  />
+                  <View style={styles.detailBody}>
+                    <Text style={[styles.detailText, checked && styles.detailTextDone]}>{h.name}</Text>
+                    <Text style={styles.detailSub}>
+                      {h.frequency === 'daily' ? '每日' : '每周'}
+                      {checked ? ' · 已打卡' : ' · 未打卡'}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.checkToggle,
+                      checked && { backgroundColor: h.color || COLORS.success, borderColor: h.color || COLORS.success },
+                    ]}
+                  >
+                    {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </View>
       </View>
     </View>
   );
@@ -318,6 +352,27 @@ const styles = StyleSheet.create({
     marginTop: 4,
     borderWidth: 0.5,
     borderColor: COLORS.border,
+  },
+  checkinBlock: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 0.5,
+    borderTopColor: COLORS.border,
+  },
+  checkinBlockTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textLight,
+    marginBottom: 8,
+  },
+  checkToggle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   detailTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 10 },
   emptyText: { fontSize: 13, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 12 },
