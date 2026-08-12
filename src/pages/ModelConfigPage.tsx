@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Alert, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -123,7 +123,11 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.root}>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="chevron-down" size={26} color={COLORS.text} />
@@ -135,7 +139,7 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
         </View>
 
         {!editing && (
-          <ScrollView style={styles.body} contentContainerStyle={{ padding: 16 }}>
+          <ScrollView style={styles.body} contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
             {list.length === 0 && (
               <View style={styles.empty}>
                 <Ionicons name="cube-outline" size={40} color={COLORS.textLighter} />
@@ -173,7 +177,7 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
         )}
 
         {editing && (
-          <ScrollView style={styles.body} contentContainerStyle={{ padding: 16 }}>
+          <ScrollView style={styles.body} contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
             <Text style={styles.label}>品牌</Text>
             <View style={styles.brandRow}>
               {BRANDS.map((b) => (
@@ -198,6 +202,8 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
               onChangeText={(t) => setEditing({ ...editing, apiKey: t })}
               autoCapitalize="none"
               autoCorrect={false}
+              returnKeyType="done"
+              blurOnSubmit={true}
             />
 
             <Text style={styles.label}>模型标识</Text>
@@ -219,6 +225,8 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
               onChangeText={(t) => setEditing({ ...editing, modelId: t })}
               autoCapitalize="none"
               autoCorrect={false}
+              returnKeyType="done"
+              blurOnSubmit={true}
             />
 
             <Text style={styles.label}>显示名（可选）</Text>
@@ -229,6 +237,8 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
               onChangeText={(t) => setEditing({ ...editing, name: t })}
               autoCapitalize="none"
               autoCorrect={false}
+              returnKeyType="done"
+              blurOnSubmit={true}
             />
 
             <View style={styles.switchRow}>
@@ -254,7 +264,7 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
             </View>
           </ScrollView>
         )}
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 };
