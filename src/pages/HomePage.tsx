@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import TimerCard from '../components/TimerCard';
@@ -59,6 +60,7 @@ const MEAL_META: Record<MealType, { label: string; icon: string }> = {
 const ADEQUACY_COLOR: Record<string, string> = { 不足: '#F59E0B', 适量: '#22C55E', 过量: '#EF4444' };
 
 const HomePage: React.FC = () => {
+  const navigation = useNavigation<any>();
   const { stats, fetchStats, fetchSessions } = useSessionStore();
   const ledgerEntries = useLedgerStore((s) => s.entries);
   const loadLedger = useLedgerStore((s) => s.load);
@@ -573,10 +575,16 @@ const HomePage: React.FC = () => {
           </View>
         )}
 
-        <TouchableOpacity style={styles.trendBtn} onPress={() => setTrendVisible(true)}>
-          <Ionicons name="stats-chart-outline" size={15} color={COLORS.primary} />
-          <Text style={styles.trendBtnText}>查看健身与身体趋势</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          <TouchableOpacity style={[styles.trendBtn, { flex: 1 }]} onPress={() => setTrendVisible(true)}>
+            <Ionicons name="stats-chart-outline" size={15} color={COLORS.primary} />
+            <Text style={styles.trendBtnText}>查看健身与身体趋势</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.trendBtn, { flex: 1 }]} onPress={() => navigation.navigate('ExerciseCalendar')}>
+            <Ionicons name="calendar-outline" size={15} color={COLORS.primary} />
+            <Text style={styles.trendBtnText}>运动日历</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.activityBtnRow}>
           <TouchableOpacity style={[styles.exAddBtn, { flex: 1 }]} onPress={openExModal}>
             <Ionicons name="add-circle-outline" size={15} color="#fff" />

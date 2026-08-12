@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import TimerStatsPanel from '../components/TimerStatsPanel';
@@ -10,12 +11,18 @@ import MealStatsPanel from '../components/MealStatsPanel';
 type Segment = 'focus' | 'ledger' | 'meal';
 
 const StatsCenterPage: React.FC = () => {
+  const navigation = useNavigation<any>();
   const [segment, setSegment] = useState<Segment>('focus');
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>统计中心</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.title}>统计中心</Text>
+          <TouchableOpacity style={styles.calBtn} onPress={() => navigation.navigate('ExerciseCalendar')}>
+            <Ionicons name="calendar-outline" size={20} color="#fff" />
+          </TouchableOpacity>
+        </View>
         <View style={styles.segment}>
           <TouchableOpacity
             style={[styles.segmentBtn, segment === 'focus' && styles.segmentBtnActive]}
@@ -91,6 +98,16 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFFFFF',
     marginBottom: 14,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  calBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.18)',
   },
   segment: {
     flexDirection: 'row',

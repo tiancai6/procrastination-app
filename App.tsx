@@ -9,11 +9,14 @@ import SettingsPage from './src/pages/SettingsPage';
 import PlanListPage from './src/pages/PlanListPage';
 import QuickMemoPage from './src/pages/QuickMemoPage';
 import ChatPage from './src/pages/ChatPage';
+import ExerciseCalendarPage from './src/pages/ExerciseCalendarPage';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
 import { migrateIfNeeded } from './src/utils/modelConfig';
 
 const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
 
 export const App: React.FC = () => {
   const [showReminder, setShowReminder] = useState(false);
@@ -55,8 +58,14 @@ export const App: React.FC = () => {
   return (
     <>
       <NavigationContainer>
-        <Tab.Navigator
-          id="main-tab-navigator"
+        <Stack.Navigator
+          id="root-stack"
+          screenOptions={{ headerShown: false }}
+        >
+          <Stack.Screen name="MainTabs" options={{ headerShown: false }}>
+            {() => (
+              <Tab.Navigator
+                id="main-tab-navigator"
           screenOptions={{
             tabBarActiveTintColor: COLORS.primary,
             tabBarInactiveTintColor: COLORS.textLighter,
@@ -128,7 +137,11 @@ export const App: React.FC = () => {
             tabBarIcon: ({ color, size }) => <Ionicons name="person-outline" color={color} size={size} />,
           }}
         />
-      </Tab.Navigator>
+              </Tab.Navigator>
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="ExerciseCalendar" component={ExerciseCalendarPage} options={{ headerShown: false }} />
+        </Stack.Navigator>
       </NavigationContainer>
 
       {/* 定时备份提醒弹窗 */}
