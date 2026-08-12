@@ -30,6 +30,7 @@ const PlanListPage: React.FC = () => {
 
   const [reminderSheet, setReminderSheet] = useState(false);
   const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
+  const [doneCollapsed, setDoneCollapsed] = useState(true); // 已完成默认折叠
   const [habitSheet, setHabitSheet] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
 
@@ -80,7 +81,12 @@ const PlanListPage: React.FC = () => {
     h.frequency === 'daily' ? '每天' : `每周 ${h.weekDays.map((d) => WEEK_LABELS[d].replace('周', '')).join(' ')}`;
 
   // ===== 渲染 =====
-  const renderTodoSection = (title: string, list: Reminder[], emptyHint?: string) => {
+  const renderTodoSection = (
+    title: string,
+    list: Reminder[],
+    emptyHint?: string,
+    opts?: { collapsed?: boolean; onToggle?: () => void },
+  ) => {
     if (list.length === 0 && emptyHint) {
       return (
         <View style={styles.section}>
@@ -92,8 +98,18 @@ const PlanListPage: React.FC = () => {
     if (list.length === 0) return null;
     return (
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>{title}（{list.length}）</Text>
-        {list.map((r) => (
+        <TouchableOpacity
+          style={[styles.sectionHeadRow, !opts?.onToggle && { paddingVertical: 0 }]}
+          onPress={opts?.onToggle}
+          disabled={!opts?.onToggle}
+          activeOpacity={opts?.onToggle ? 0.6 : 1}
+        >
+          <Text style={styles.sectionTitle}>{title}（{list.length}）</Text>
+          {opts?.onToggle && (
+            <Ionicons name={opts.collapsed ? 'chevron-down' : 'chevron-up'} size={16} color={COLORS.textLight} />
+          )}
+        </TouchableOpacity>
+        {opts?.collapsed ? null : list.map((r) => (
           <TouchableOpacity key={r.id} style={styles.todoItem} onPress={() => openReminder(r)}>
             <TouchableOpacity
               style={[styles.check, r.done && styles.checkDone]}
@@ -193,7 +209,7 @@ const PlanListPage: React.FC = () => {
           {renderTodoSection('今天', todoToday)}
           {renderTodoSection('即将到来', todoUpcoming)}
           {renderTodoSection('已逾期', todoOverdue)}
-          {renderTodoSection('已完成', todoDone)}
+          {renderTodoSection('已完成', todoDone, undefined, { collapsed: doneCollapsed, onToggle: () => setDoneCollapsed((c) => !c) })}
           {reminders.length === 0 && (
             <View style={styles.emptyState}>
               <Ionicons name="checkbox-outline" size={48} color={COLORS.border} />
@@ -288,6 +304,7 @@ const styles = StyleSheet.create({
 
   section: { marginBottom: 18 },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 8 },
+  sectionHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   sectionEmpty: { fontSize: 13, color: COLORS.textLighter, paddingVertical: 6 },
   todoItem: {
     flexDirection: 'row',

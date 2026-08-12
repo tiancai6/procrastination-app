@@ -1,4 +1,5 @@
 // 运动量 / TDEE 计算。基础代谢用 Mifflin-St Jeor，总消耗 = BMR×活动系数 + 运动消耗。
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getBodyProfile,
   getDailyActivity,
@@ -27,7 +28,51 @@ export const BASE_LEVEL_LABEL: Record<DailyActivity['baseLevel'], string> = {
   high: '高强度',
 };
 
-export const EXERCISE_TYPES = ['跑步', '力量', '游泳', '骑行', '瑜伽', '其他'];
+export const DEFAULT_EXERCISE_TYPES = ['跑步', '力量', '游泳', '骑行', '瑜伽', '其他'];
+// 兼容旧引用：默认初值（首次进入时使用，之后以用户自定义存储为准）
+export const EXERCISE_TYPES = DEFAULT_EXERCISE_TYPES;
+
+const EXERCISE_TYPES_KEY = 'exercise_types';
+
+// 运动类型改为用户可增删改：从 AsyncStorage 读取，无则返回默认初值。
+export const getExerciseTypes = async (): Promise<string[]> => {
+  try {
+    const raw = await AsyncStorage.getItem(EXERCISE_TYPES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    }
+  } catch {
+    /* ignore */
+  }
+  return [...DEFAULT_EXERCISE_TYPES];
+};
+
+export const saveExerciseTypes = async (types: string[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(EXERCISE_TYPES_KEY, JSON.stringify(types));
+  } catch (e) {
+    console.error('[activity] saveExerciseTypes failed', e);
+  }
+};
+
+export const addExerciseType = async (t: string): Promise<string[]> => {
+  const name = (t || '').trim();
+  if (!name) return getExerciseTypes();
+  const list = await getExerciseTypes();
+  if (list.includes(name)) return list;
+  const next = [...list, name];
+  await saveExerciseTypes(next);
+  return next;
+};
+
+export const removeExerciseType = async (t: string): Promise<string[]> => {
+  const list = await getExerciseTypes();
+  if (list.length <= 1) return list; // 至少保留一个类型
+  const next = list.filter((x) => x !== t);
+  await saveExerciseTypes(next);
+  return next;
+};
 
 // Mifflin-St Jeor 基础代谢率（kcal/天）
 export const calcBMR = (p: BodyProfile): number => {

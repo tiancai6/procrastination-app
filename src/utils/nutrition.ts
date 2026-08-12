@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getActiveConfig } from './modelConfig';
 import { postChat, parseJsonContent } from './model';
+import { ModelConfig } from './modelConfig';
 import { autoBackup } from './autoBackup';
 import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy } from '../types';
 
@@ -278,8 +279,8 @@ const normalizeNutrition = (raw: any): MealNutrition => {
 // 大部分情况能自己恢复，避免你看到冷冰冰的「估算失败」。
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext): Promise<EstimateResult> => {
-  const cfg = await getActiveConfig(false);
+export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext, cfgOverride?: ModelConfig): Promise<EstimateResult> => {
+  const cfg = cfgOverride || (await getActiveConfig(false));
   if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
 
@@ -324,6 +325,7 @@ const estimateInParallel = async (
   targets: MealEntry[],
   onEach?: (done: number, total: number) => void,
   ctx?: MealContext,
+  cfg?: ModelConfig,
 ): Promise<Map<string, MealNutrition>> => {
   const out = new Map<string, MealNutrition>();
   let done = 0;
@@ -332,7 +334,7 @@ const estimateInParallel = async (
   const worker = async () => {
     while (cursor < targets.length) {
       const e = targets[cursor++];
-      const { result } = await estimateMealNutrition(e, ctx);
+      const { result } = await estimateMealNutrition(e, ctx, cfg);
       if (result) out.set(e.id, result);
       done += 1;
       onEach?.(done, targets.length);
@@ -348,9 +350,10 @@ export const estimateDayMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
   ctx?: MealContext,
+  cfg?: ModelConfig,
 ): Promise<MealEntry[]> => {
   const valid = entries.filter((e) => e.content && e.content.trim());
-  const results = await estimateInParallel(valid, onEach, ctx);
+  const results = await estimateInParallel(valid, onEach, ctx, cfg);
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
@@ -363,9 +366,10 @@ export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
   ctx?: MealContext,
+  cfg?: ModelConfig,
 ): Promise<number> => {
   const missing = entries.filter((m) => m.content && m.content.trim() && !m.nutrition);
-  const results = await estimateInParallel(missing, onEach, ctx);
+  const results = await estimateInParallel(missing, onEach, ctx, cfg);
   if (results.size === 0) return 0;
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
@@ -402,4 +406,50 @@ ${mealsSummary}
     console.error('[Nutrition] advice call failed', e);
     return { text: '', status: 'error' };
   }
+};
+
+// ============ 食物库（用户常用食物，免重复输入配料表） ============
+export interface FoodItem {
+  id: string;
+  name: string; // 含分量，如「米饭 1碗(约150g)」
+  protein: number;
+  calories: number;
+  fat: number;
+  carbs: number;
+  fiber: number;
+  water?: number;
+}
+
+const FOOD_LIBRARY_KEY = 'food_library';
+
+export const getFoodLibrary = async (): Promise<FoodItem[]> => {
+  try {
+    const raw = await AsyncStorage.getItem(FOOD_LIBRARY_KEY);
+    return raw ? (JSON.parse(raw) as FoodItem[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveFoodLibrary = async (list: FoodItem[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(FOOD_LIBRARY_KEY, JSON.stringify(list));
+    await autoBackup();
+  } catch (e) {
+    console.error('[Nutrition] saveFoodLibrary failed', e);
+  }
+};
+
+export const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<FoodItem[]> => {
+  const list = await getFoodLibrary();
+  const next = [...list, { ...item, id: `food_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }];
+  await saveFoodLibrary(next);
+  return next;
+};
+
+export const deleteFoodItem = async (id: string): Promise<FoodItem[]> => {
+  const list = await getFoodLibrary();
+  const next = list.filter((x) => x.id !== id);
+  await saveFoodLibrary(next);
+  return next;
 };

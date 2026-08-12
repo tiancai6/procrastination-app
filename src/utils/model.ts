@@ -17,6 +17,10 @@ const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined 
   const tool = BRAND_PRESETS[cfg.brand].searchTool;
   if (!tool) return undefined;
   if (!cfg.webSearch && !forceSearch) return undefined;
+  // 豆包的 web_search 工具是 Responses API 的格式（{type:'web_search'}），而本 App 走的是
+  // /v3/chat/completions（Chat Completions）端点，豆包在该端点不认这个工具 → 直接 400。
+  // 故豆包暂不支持联网搜索（避免 400 导致所有 AI 调用失败）；GLM 的 web_search 在 chat/completions 可用，保留。
+  if (cfg.brand === 'doubao') return undefined;
   return tool === 'google_search' ? [{ google_search: {} }] : [{ type: 'web_search' }];
 };
 
@@ -65,7 +69,18 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     console.error('[model] request failed', cfg.brand, res.status, errText);
-    throw new Error(`${BRAND_PRESETS[cfg.brand].label} 请求失败（${res.status}），请检查网络或 API Key`);
+    let msg = `${BRAND_PRESETS[cfg.brand].label} 请求失败（${res.status}）`;
+    if (res.status === 400) {
+      msg += '：请求被服务器拒绝（400）。常见原因：①开启了「联网搜索」但当前品牌在 Chat Completions 端点不支持该工具（豆包暂不支持，请到「管理 AI 模型」关掉该模型的联网搜索开关）；②模型标识/接口填错。';
+    } else if (res.status === 401 || res.status === 403) {
+      msg += '：API Key 无效或没有权限，请检查密钥。';
+    } else if (res.status === 404) {
+      msg += '：模型/接口找不到，请确认模型标识填的是接入点 ID（ep-xxxx）而非模型名。';
+    } else if (res.status === 429) {
+      msg += '：触发频率限制，请稍候重试。';
+    }
+    if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
+    throw new Error(msg);
   }
   const data = await res.json();
   const content: string | undefined = data?.choices?.[0]?.message?.content;

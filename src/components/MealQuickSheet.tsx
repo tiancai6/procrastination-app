@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
-import { MealType, MealEntry } from '../types';
+import { MealType, MealEntry, MealNutritionItem } from '../types';
 import {
   getMealsByDate,
   upsertMeal,
@@ -25,9 +25,14 @@ import {
   estimateDayMeals,
   MealContext,
   calcProteinTarget,
+  getFoodLibrary,
+  addFoodItem,
+  deleteFoodItem,
+  FoodItem,
 } from '../utils/nutrition';
 import { getApiKey, getHealthDaily, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
+import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import CalendarPicker, { WEEK_LABELS } from './CalendarPicker';
 import NutritionDetail from './NutritionDetail';
 
@@ -105,8 +110,16 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   const [proteinTarget, setProteinTarget] = useState(60);
   // 哪些餐展开了「逐样食物明细」
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [models, setModels] = useState<ModelConfig[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState('');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [foodLib, setFoodLib] = useState<FoodItem[]>([]);
+  const [showFoodPicker, setShowFoodPicker] = useState(false);
+  const [foodTarget, setFoodTarget] = useState<{ type: MealType; idx?: number } | null>(null);
+  const [newFood, setNewFood] = useState<{ name: string; calories: string; protein: string; fat: string; carbs: string; fiber: string }>({ name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '' });
 
   const toggleExpand = (id: string) => setExpanded((e) => ({ ...e, [id]: !e[id] }));
+  const selCfg: ModelConfig | undefined = selectedModelId ? models.find((m) => m.id === selectedModelId) || undefined : undefined;
 
   useEffect(() => {
     if (!visible) return;
@@ -133,6 +146,8 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       const byType = (t: MealType) => list.find((m) => m.type === t)?.content || '';
       setContents({ breakfast: byType('breakfast'), lunch: byType('lunch'), dinner: byType('dinner'), snack: '' });
       setSnackList(list.filter((m) => m.type === 'snack').map((m) => ({ id: m.id, content: m.content })));
+      setModels(await getModelConfigs());
+      setFoodLib(await getFoodLibrary());
       setEstMsg('');
     })();
   }, [visible, dateStr]);
@@ -153,6 +168,26 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   }, [visible, entries, dateStr]);
 
   const setContent = (t: MealType, v: string) => setContents((c) => ({ ...c, [t]: v }));
+
+  const appendFood = (f: FoodItem) => {
+    const piece = f.name;
+    if (foodTarget?.type === 'snack' && foodTarget.idx != null) {
+      const cur = snackList[foodTarget.idx]?.content || '';
+      updateSnack(foodTarget.idx, cur ? cur + '\n' + piece : piece);
+    } else if (foodTarget?.type) {
+      const cur = contents[foodTarget.type];
+      setContent(foodTarget.type, cur ? cur + '\n' + piece : piece);
+    }
+    setShowFoodPicker(false);
+  };
+
+  const saveItemsToFood = async (items: MealNutritionItem[]) => {
+    for (const it of items) {
+      await addFoodItem({ name: it.name, protein: it.protein || 0, calories: it.calories || 0, fat: it.fat || 0, carbs: it.carbs || 0, fiber: it.fiber || 0 });
+    }
+    setFoodLib(await getFoodLibrary());
+    Alert.alert('已存入食物库', `已保存 ${items.length} 样食物，下次记录可直接从食物库选择`);
+  };
 
   const doSave = async () => {
     await upsertMeal('breakfast', dateStr, contents.breakfast);
@@ -189,7 +224,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstimatingMealId(id);
     setEstMsg('');
     const ctx = await buildMealContext(dateStr);
-    const { result, status } = await estimateMealNutrition({ ...entry, id }, ctx);
+    const { result, status } = await estimateMealNutrition({ ...entry, id }, ctx, selCfg);
     if (status === 'ok' && result) {
       const next = await saveMealNutrition(id, result);
       setEntries(next.filter((m) => m.date === dateStr));
@@ -221,7 +256,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstimatingAll(true);
     setEstMsg('');
     const ctx = await buildMealContext(dateStr);
-    const next = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx);
+    const next = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
     const dayList = next.filter((m) => m.date === dateStr);
     setEntries(dayList);
     // 全部估算完，把有结果的餐都展开明细
@@ -251,7 +286,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstProgress(`估算中 0/${pending.length}`);
     try {
       const ctx = await buildMealContext(dateStr);
-      const next = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx);
+      const next = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
       setEntries(next.filter((m) => m.date === dateStr));
       onSaved?.();
     } catch (e) {
@@ -303,6 +338,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
             <Ionicons name={f.icon as any} size={16} color={COLORS.primary} />
             <Text style={styles.mealLabel}>{f.label}</Text>
           </View>
+          <TouchableOpacity style={styles.mealFoodBtn} onPress={() => { setFoodTarget({ type: f.key }); setShowFoodPicker(true); }}>
+            <Ionicons name="fast-food-outline" size={14} color="#8B5CF6" />
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.mealEstBtn, estimating && styles.mealEstBtnDisabled]}
             onPress={() => doEstimateMeal({ id: `${dateStr}_${f.key}`, type: f.key, content: contents[f.key], date: dateStr, createdAt: Date.now() })}
@@ -334,6 +372,10 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                 <Text style={styles.detailToggleText}>{expanded[entry.id] ? '收起' : '各食物明细'}</Text>
                 <Ionicons name={expanded[entry.id] ? 'chevron-up' : 'chevron-down'} size={12} color="#8B5CF6" />
               </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveFoodBtn} onPress={() => saveItemsToFood(entry.nutrition?.items || [])}>
+              <Ionicons name="bookmark-outline" size={13} color="#8B5CF6" />
+              <Text style={styles.saveFoodBtnText}>存为食物</Text>
             </TouchableOpacity>
             {expanded[entry.id] && <NutritionDetail nutrition={entry.nutrition} />}
           </>
@@ -368,6 +410,34 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
             >
               {energySummary ? <Text style={styles.energyHint}>{energySummary}</Text> : null}
               {tdee > 0 ? renderIntakeBar() : null}
+              <TouchableOpacity style={styles.modelPickRow} onPress={() => setShowModelPicker((v) => !v)}>
+                <Ionicons name="swap-horizontal-outline" size={14} color={COLORS.primary} />
+                <Text style={styles.modelPickText}>
+                  估算模型：{selCfg ? selCfg.name : '默认（' + (models.find((m) => m.isDefault)?.name || '未配置') + '）'}
+                </Text>
+                <Ionicons name="chevron-down" size={14} color={COLORS.textLight} />
+              </TouchableOpacity>
+              {showModelPicker && (
+                <View style={styles.modelPickBox}>
+                  <TouchableOpacity
+                    style={[styles.modelPickItem, !selectedModelId && styles.modelPickItemActive]}
+                    onPress={() => { setSelectedModelId(''); setShowModelPicker(false); }}
+                  >
+                    <Text style={styles.modelPickItemText}>默认（{models.find((m) => m.isDefault)?.name || '未配置'}）</Text>
+                  </TouchableOpacity>
+                  {models.map((m) => (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={[styles.modelPickItem, selectedModelId === m.id && styles.modelPickItemActive]}
+                      onPress={() => { setSelectedModelId(m.id); setShowModelPicker(false); }}
+                    >
+                      <Text style={styles.modelPickItemText}>
+                        {m.name}{m.isVision ? ' · 视觉' : ''}{m.webSearch ? ' · 搜索' : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
               <TouchableOpacity style={styles.dateRow} onPress={() => setShowDatePicker(true)}>
                 <Ionicons name="calendar-outline" size={15} color={COLORS.primary} />
                 <Text style={styles.dateText}>{formatDate(dateStr)}</Text>
@@ -405,6 +475,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                           multiline
                           maxLength={200}
                         />
+                        <TouchableOpacity style={styles.snackFoodBtn} onPress={() => { setFoodTarget({ type: 'snack', idx }); setShowFoodPicker(true); }}>
+                          <Ionicons name="fast-food-outline" size={14} color="#8B5CF6" />
+                        </TouchableOpacity>
                         <TouchableOpacity
                           style={[styles.snackEstBtn, estimating && styles.mealEstBtnDisabled]}
                           onPress={() => s.content.trim() && doEstimateMeal({ id: s.id || `${dateStr}_snack_${idx}`, type: 'snack', content: s.content, date: dateStr, createdAt: Date.now() })}
@@ -437,6 +510,10 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                                 />
                               </View>
                             </TouchableOpacity>
+                            <TouchableOpacity style={styles.saveFoodBtn} onPress={() => saveItemsToFood(entry.nutrition?.items || [])}>
+                              <Ionicons name="bookmark-outline" size={13} color="#8B5CF6" />
+                              <Text style={styles.saveFoodBtnText}>存为食物</Text>
+                            </TouchableOpacity>
                             {expanded[entry.id] && <NutritionDetail nutrition={entry.nutrition} />}
                           </View>
                         )}
@@ -447,6 +524,49 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
               </View>
 
               {estMsg ? <Text style={styles.estMsg}>{estMsg}</Text> : null}
+              {showFoodPicker && (
+                <View style={styles.foodBox}>
+                  <View style={styles.foodBoxHead}>
+                    <Text style={styles.foodBoxTitle}>
+                      食物库（点选加入「{foodTarget?.type === 'snack' ? '加餐' : (foodTarget?.type ? MEAL_FIELDS.find((m) => m.key === foodTarget.type)?.label : '')}」）
+                    </Text>
+                    <TouchableOpacity onPress={() => setShowFoodPicker(false)}>
+                      <Ionicons name="close" size={18} color={COLORS.textLight} />
+                    </TouchableOpacity>
+                  </View>
+                  {foodLib.length === 0 && <Text style={styles.foodEmpty}>还没有保存的食物，估算后点「存为食物」即可加入</Text>}
+                  {foodLib.map((f) => (
+                    <View key={f.id} style={styles.foodItem}>
+                      <TouchableOpacity style={styles.foodItemMain} onPress={() => appendFood(f)}>
+                        <Text style={styles.foodItemName}>{f.name}</Text>
+                        <Text style={styles.foodItemNut}>蛋{f.protein}g · 热{f.calories}kcal</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => deleteFoodItem(f.id).then(setFoodLib)}>
+                        <Ionicons name="trash-outline" size={15} color={COLORS.textLight} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <View style={styles.foodAddBox}>
+                    <Text style={styles.foodAddTitle}>新增食物</Text>
+                    <TextInput style={styles.mealInput} placeholder="名称含分量，如：米饭 1碗(约150g)" placeholderTextColor={COLORS.textLighter} value={newFood.name} onChangeText={(v) => setNewFood({ ...newFood, name: v })} />
+                    <View style={styles.foodAddGrid}>
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="热量" placeholderTextColor={COLORS.textLighter} value={newFood.calories} onChangeText={(v) => setNewFood({ ...newFood, calories: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="蛋白" placeholderTextColor={COLORS.textLighter} value={newFood.protein} onChangeText={(v) => setNewFood({ ...newFood, protein: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="脂肪" placeholderTextColor={COLORS.textLighter} value={newFood.fat} onChangeText={(v) => setNewFood({ ...newFood, fat: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="碳水" placeholderTextColor={COLORS.textLighter} value={newFood.carbs} onChangeText={(v) => setNewFood({ ...newFood, carbs: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="纤维" placeholderTextColor={COLORS.textLighter} value={newFood.fiber} onChangeText={(v) => setNewFood({ ...newFood, fiber: v })} />
+                    </View>
+                    <TouchableOpacity style={styles.foodAddBtn} onPress={async () => {
+                      if (!newFood.name.trim()) return;
+                      await addFoodItem({ name: newFood.name.trim(), calories: Number(newFood.calories) || 0, protein: Number(newFood.protein) || 0, fat: Number(newFood.fat) || 0, carbs: Number(newFood.carbs) || 0, fiber: Number(newFood.fiber) || 0 });
+                      setFoodLib(await getFoodLibrary());
+                      setNewFood({ name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '' });
+                    }}>
+                      <Text style={styles.foodAddBtnText}>保存到食物库</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
             </ScrollView>
 
             <View style={styles.actions}>
@@ -557,6 +677,22 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     marginBottom: 14,
   },
+  modelPickRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+    backgroundColor: '#EEF2FF', borderWidth: 0.5, borderColor: '#C7D2FE', marginBottom: 12,
+  },
+  modelPickText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  modelPickBox: {
+    marginBottom: 12, padding: 10, borderRadius: 12, backgroundColor: COLORS.background,
+    borderWidth: 0.5, borderColor: COLORS.border,
+  },
+  modelPickItem: {
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 6,
+    backgroundColor: COLORS.card, borderWidth: 0.5, borderColor: COLORS.border,
+  },
+  modelPickItemActive: { backgroundColor: '#EDE9FE', borderColor: COLORS.primary },
+  modelPickItemText: { fontSize: 13.5, color: COLORS.text },
   dateText: {
     fontSize: 14,
     color: COLORS.text,
@@ -722,6 +858,40 @@ const styles = StyleSheet.create({
     color: COLORS.danger,
     marginTop: 8,
   },
+  mealFoodBtn: {
+    width: 34, height: 34, borderRadius: 10, backgroundColor: '#F5F0FF',
+    borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',
+  },
+  snackFoodBtn: {
+    width: 34, height: 34, borderRadius: 10, backgroundColor: '#F5F0FF',
+    borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',
+  },
+  saveFoodBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
+    marginTop: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10,
+    backgroundColor: '#F5F0FF', borderWidth: 0.5, borderColor: '#DDD0FB',
+  },
+  saveFoodBtnText: { color: '#8B5CF6', fontSize: 12, fontWeight: '600' },
+  foodBox: {
+    marginTop: 8, padding: 12, borderRadius: 12, backgroundColor: COLORS.background,
+    borderWidth: 0.5, borderColor: COLORS.border,
+  },
+  foodBoxHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  foodBoxTitle: { fontSize: 13.5, fontWeight: '700', color: COLORS.text },
+  foodEmpty: { fontSize: 12.5, color: COLORS.textLight, marginBottom: 8 },
+  foodItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: COLORS.border },
+  foodItemMain: { flex: 1, marginRight: 10 },
+  foodItemName: { fontSize: 13.5, color: COLORS.text },
+  foodItemNut: { fontSize: 11.5, color: COLORS.textLight, marginTop: 2 },
+  foodAddBox: { marginTop: 10, paddingTop: 10, borderTopWidth: 0.5, borderTopColor: COLORS.border },
+  foodAddTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text, marginBottom: 6 },
+  foodAddGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  foodNum: {
+    width: '30%', borderWidth: 0.5, borderColor: COLORS.border, borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 7, fontSize: 13, color: COLORS.text, backgroundColor: COLORS.card,
+  },
+  foodAddBtn: { marginTop: 10, paddingVertical: 11, borderRadius: 10, backgroundColor: COLORS.primary, alignItems: 'center' },
+  foodAddBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   actions: {
     flexDirection: 'row',
     gap: 10,

@@ -28,7 +28,10 @@ import {
 import {
   calcDayEnergy,
   BASE_LEVEL_LABEL,
-  EXERCISE_TYPES,
+  getExerciseTypes,
+  addExerciseType,
+  removeExerciseType,
+  DEFAULT_EXERCISE_TYPES,
   estimateExerciseKcal,
   saveExerciseRecord,
   DEFAULT_BODY_PROFILE,
@@ -77,8 +80,11 @@ const HomePage: React.FC = () => {
   const [ocrMsg, setOcrMsg] = useState('');
   const [exModal, setExModal] = useState(false);
   const [trendVisible, setTrendVisible] = useState(false);
-  const [exType, setExType] = useState(EXERCISE_TYPES[0]);
+  const [exTypes, setExTypes] = useState<string[]>(DEFAULT_EXERCISE_TYPES);
+  const [exType, setExType] = useState('');
   const [exCustom, setExCustom] = useState('');
+  const [exTypeManager, setExTypeManager] = useState(false);
+  const [newTypeInput, setNewTypeInput] = useState('');
   const [exDuration, setExDuration] = useState('30');
   const [exKcal, setExKcal] = useState('');
   const [estimatingEx, setEstimatingEx] = useState(false);
@@ -97,6 +103,9 @@ const HomePage: React.FC = () => {
     setDayEnergy(await calcDayEnergy(t));
     setActivity(await getDailyActivity(t));
     setHealth(await getHealthDaily(t));
+    const types = await getExerciseTypes();
+    setExTypes(types);
+    if (!exType || !types.includes(exType)) setExType(types[0]);
   };
 
   useEffect(() => {
@@ -148,7 +157,7 @@ const HomePage: React.FC = () => {
   };
 
   const openExModal = () => {
-    setExType(EXERCISE_TYPES[0]);
+    setExType(exTypes[0] || '其他');
     setExDuration('30');
     setExKcal('');
     setExCustom('');
@@ -707,7 +716,7 @@ const HomePage: React.FC = () => {
                 <Text style={styles.sheetTitle}>加运动记录</Text>
                 <Text style={styles.sheetLabel}>类型</Text>
                 <View style={styles.exTypeRow}>
-                  {EXERCISE_TYPES.map((t) => (
+                  {exTypes.map((t) => (
                     <TouchableOpacity
                       key={t}
                       style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
@@ -717,6 +726,50 @@ const HomePage: React.FC = () => {
                     </TouchableOpacity>
                   ))}
                 </View>
+                <TouchableOpacity style={styles.exManageBtn} onPress={() => setExTypeManager((v) => !v)}>
+                  <Ionicons name="options-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.exManageBtnText}>{exTypeManager ? '收起' : '管理运动类型'}</Text>
+                </TouchableOpacity>
+                {exTypeManager && (
+                  <View style={styles.exManagerBox}>
+                    {exTypes.map((t) => (
+                      <View key={t} style={styles.exTypeManageRow}>
+                        <Text style={styles.exTypeManageText}>{t}</Text>
+                        <TouchableOpacity
+                          onPress={async () => {
+                            const next = await removeExerciseType(t);
+                            setExTypes(next);
+                            if (!next.includes(exType)) setExType(next[0] || '');
+                          }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={COLORS.danger || '#EF4444'} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                    <View style={styles.exAddTypeRow}>
+                      <TextInput
+                        style={styles.inputBox}
+                        placeholder="新增类型，如：跳绳"
+                        placeholderTextColor="#94A3B8"
+                        value={newTypeInput}
+                        onChangeText={setNewTypeInput}
+                        returnKeyType="done"
+                        blurOnSubmit
+                      />
+                      <TouchableOpacity
+                        style={styles.exAddTypeBtn}
+                        onPress={async () => {
+                          const next = await addExerciseType(newTypeInput);
+                          setExTypes(next);
+                          setNewTypeInput('');
+                          setExTypeManager(false);
+                        }}
+                      >
+                        <Text style={styles.exAddTypeBtnText}>添加</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
                 {exType === '其他' && (
                   <>
                     <Text style={styles.sheetLabel}>自定义运动名称</Text>
@@ -1248,6 +1301,26 @@ const styles = StyleSheet.create({
   exTypeChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   exTypeChipText: { fontSize: 13, color: COLORS.text },
   exTypeChipTextActive: { color: '#fff', fontWeight: '600' },
+  exManageBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
+    marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10,
+    backgroundColor: '#EEF2FF', borderWidth: 0.5, borderColor: '#C7D2FE',
+  },
+  exManageBtnText: { color: COLORS.primary, fontSize: 12.5, fontWeight: '600' },
+  exManagerBox: {
+    marginTop: 10, padding: 12, borderRadius: 12, backgroundColor: COLORS.background,
+    borderWidth: 0.5, borderColor: COLORS.border,
+  },
+  exTypeManageRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: COLORS.border,
+  },
+  exTypeManageText: { fontSize: 14, color: COLORS.text },
+  exAddTypeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  exAddTypeBtn: {
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, backgroundColor: COLORS.primary,
+  },
+  exAddTypeBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   estimateBtn: {
     marginTop: 12,
     flexDirection: 'row',
