@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getActiveConfig } from './modelConfig';
-import { postChat, parseJsonContent } from './model';
+import { postChat, postChatResponses, parseJsonContent } from './model';
 import { ModelConfig } from './modelConfig';
 import { autoBackup } from './autoBackup';
 import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy, KnownFood } from '../types';
@@ -429,27 +429,28 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
       '\n上面已列出的食物请严格采用给出的数值，不要改写；若文字里还提到上面没列出的其它食物（没有营养表），请联网搜索其常见热量后再估算。'
     : '';
 
+  // 火山（豆包）的联网搜索只在 Responses API 可用，需要联网时走 postChatResponses；其它品牌走 chat/completions。
+  const useResponses = cfg.brand === 'doubao' && needSearch;
+  const messages = [
+    { role: 'system' as const, content: NUTRITION_SYSTEM_PROMPT },
+    {
+      role: 'user' as const,
+      content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
+    },
+  ];
+
   const MAX_RETRIES = 4;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const content = await postChat(
-        cfg,
-        [
-          { role: 'system', content: NUTRITION_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
-          },
-        ],
-        // 仅当这顿含「食物库没有的陌生食物」才联网搜索；纯已知食物不联网（豆包不支持搜索会静默失效，见 searched）
-        { temperature: 0.5, maxTokens: 1000, forceSearch: needSearch },
-      );
+      const content = useResponses
+        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 1000 })
+        : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 1000, forceSearch: needSearch });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 用食物库的准确数值（已换算）覆盖 AI 对已知食物的估算，保证「已记录食物」的热量一定准确
       applyKnownFoods(parsed, known);
-      // 实际是否联网：豆包在 model.ts 已自动禁用搜索工具，故 forceSearch 对它无效
-      const searched = needSearch && cfg.brand !== 'doubao';
+      // 实际是否联网：火山走 Responses 通道、其余支持 web_search 的品牌走 chat/completions
+      const searched = useResponses || (needSearch && cfg.brand !== 'doubao');
       return { result: parsed, status: 'ok', searched, needSearch };
     } catch (e: any) {
       const isRate = e?.message && String(e.message).includes('429');

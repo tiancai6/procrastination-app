@@ -45,7 +45,7 @@ export const BRAND_PRESETS: Record<ModelBrand, BrandPreset> = {
     // 不是模型名（doubao-seed-2.0-lite 等无法直接调用，会 404）。下面作为占位提示。
     models: ['（填你的接入点ID，形如 ep-xxxx）'],
     searchTool: 'web_search',
-    notes: '火山方舟需先在控制台创建「推理接入点」，模型标识填该接入点 ID（ep-xxxx），不能直接填模型名。API Key 在「API 密钥」页获取。联网搜索当前不支持（会 400，已自动关闭）。',
+    notes: '火山方舟需先在控制台创建「推理接入点」，模型标识填该接入点 ID（ep-xxxx），不能直接填模型名。API Key 在「API 密钥」页获取。联网搜索：营养估算遇到陌生食物时会自动走 Responses API（/v3/responses）联网，需在该接入点已开启「联网搜索」插件。',
   },
   deepseek: {
     label: 'DeepSeek',

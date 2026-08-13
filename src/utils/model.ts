@@ -17,9 +17,9 @@ const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined 
   const tool = BRAND_PRESETS[cfg.brand].searchTool;
   if (!tool) return undefined;
   if (!cfg.webSearch && !forceSearch) return undefined;
-  // 豆包的 web_search 工具是 Responses API 的格式（{type:'web_search'}），而本 App 走的是
-  // /v3/chat/completions（Chat Completions）端点，豆包在该端点不认这个工具 → 直接 400。
-  // 故豆包暂不支持联网搜索（避免 400 导致所有 AI 调用失败）；GLM 的 web_search 在 chat/completions 可用，保留。
+  // 豆包（火山）的 web_search 工具只在 Responses API 端点（/api/v3/responses）可用；本 App 的
+  // Chat Completions 流式路径（ChatPage）走的是 /chat/completions，不认该工具 → 这里仍对豆包返回
+  // undefined（避免 400）。营养估算的联网搜索走 model.ts 的 postChatResponses（Responses 通道），见 nutrition.ts。
   if (cfg.brand === 'doubao') return undefined;
   return tool === 'google_search' ? [{ google_search: {} }] : [{ type: 'web_search' }];
 };
@@ -84,6 +84,91 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   }
   const data = await res.json();
   const content: string | undefined = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('模型返回为空');
+  return content;
+};
+
+// ============ 火山方舟（豆包）Responses API 通道 ============
+// 火山的联网搜索（web_search）只在 Responses API（/api/v3/responses）提供，Chat Completions 端点不认该工具。
+// 仅当默认模型为火山、且需要联网搜索（如营养估算遇到陌生食物）时，由 nutrition.ts 调用本函数。
+// 请求体结构与 Chat Completions 不同：messages → input（每项 content 为 input_text 结构）、系统提示词 → instructions。
+
+const toResponsesUrl = (baseUrl: string): string =>
+  baseUrl.replace(/\/chat\/completions\/?$/, '/responses');
+
+// 把 ChatPayload（含 system + user/assistant 消息）转成 Responses API 的 { instructions, input }
+const toResponsesBody = (payload: ChatPayload) => {
+  let instructions: string | undefined;
+  const input: any[] = [];
+  for (const m of payload) {
+    const text = typeof m.content === 'string' ? m.content : m.content.map((p) => (p.type === 'text' ? p.text : '')).join('');
+    if (m.role === 'system') {
+      instructions = instructions ? instructions + '\n' + text : text;
+    } else {
+      input.push({
+        role: m.role,
+        content: [{ type: 'input_text', text }],
+      });
+    }
+  }
+  return { instructions, input };
+};
+
+// 从 Responses API 响应里取模型最终文本（兼容 output_text 便捷字段与 output[].content 结构）
+const extractResponsesText = (data: any): string | undefined => {
+  if (typeof data?.output_text === 'string' && data.output_text) return data.output_text;
+  const msg = (data?.output || []).find((o: any) => o?.type === 'message');
+  if (msg?.content) {
+    const txt = msg.content
+      .filter((c: any) => c?.type === 'output_text' && c?.text)
+      .map((c: any) => c.text)
+      .join('');
+    if (txt) return txt;
+  }
+  return undefined;
+};
+
+export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts = {}): Promise<string> => {
+  if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
+  const url = toResponsesUrl(cfg.baseUrl);
+  const { instructions, input } = toResponsesBody(payload);
+  const body: any = {
+    model: cfg.modelId,
+    stream: false,
+    input,
+    tools: [{ type: 'web_search' }],
+    temperature: opts.temperature ?? 0.7,
+    max_output_tokens: opts.maxTokens ?? 1000,
+  };
+  if (instructions) body.instructions = instructions;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error('[model] responses request failed', cfg.brand, res.status, errText);
+    let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${res.status}）`;
+    if (res.status === 400) {
+      msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已在控制台为该接入点开启「联网搜索」插件。';
+    } else if (res.status === 401 || res.status === 403) {
+      msg += '：API Key 无效或没有权限，请检查密钥。';
+    } else if (res.status === 404) {
+      msg += '：接口/模型找不到，请确认接入点 ID（ep-xxxx）正确，且该接入点已支持 Responses API 与联网搜索。';
+    } else if (res.status === 429) {
+      msg += '：触发频率限制，请稍候重试。';
+    }
+    if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  const content = extractResponsesText(data);
   if (!content) throw new Error('模型返回为空');
   return content;
 };
