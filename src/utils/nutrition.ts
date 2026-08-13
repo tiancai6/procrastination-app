@@ -399,6 +399,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   const cfg = cfgOverride || (await getActiveConfig(false));
   if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
+  // 🔧 调试日志：确认营养估算实际使用的模型
+  console.log(`[Nutrition] 使用模型: brand=${cfg.brand}, modelId=${cfg.modelId}, override=${!!cfgOverride}`);
 
   // 已知营养（来自食物库）：先按用户实际吃的份量缩放，再作为 ground truth 注入 prompt，
   // 保证「半碗米饭」也按半碗的热量算，而不是整份。

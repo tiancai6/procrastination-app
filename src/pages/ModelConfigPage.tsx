@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Alert, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Switch, Alert, Modal, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -14,6 +14,7 @@ import {
   setDefaultModel,
   setDefaultVisionModel,
 } from '../utils/modelConfig';
+import { postChat } from '../utils/model';
 
 const BRANDS: ModelBrand[] = ['glm', 'doubao', 'deepseek', 'gemini'];
 
@@ -37,6 +38,8 @@ interface Props {
 const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
   const [list, setList] = useState<ModelConfig[]>([]);
   const [editing, setEditing] = useState<Draft | null>(null);
+  // 测试连通性：记录正在测试的模型 id（非空时对应按钮显示加载中）
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const load = async () => setList(await getModelConfigs());
   useEffect(() => {
@@ -74,6 +77,50 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
   const changeBrand = (b: ModelBrand) => {
     if (!editing) return;
     setEditing({ ...editing, brand: b, modelId: BRAND_PRESETS[b].models[0] });
+  };
+
+  // 测试单个模型的连通性：发一条极简请求，报告成功/失败/耗时
+  const testConnection = async (cfg: ModelConfig) => {
+    if (testingId) return; // 防止重复点
+    setTestingId(cfg.id);
+    const t0 = Date.now();
+    try {
+      // 豆包走 Responses API 测试（因为 Chat Completions 端点可能因模型名格式 404）；
+      // 其余品牌统一走 Chat Completions。
+      let resp: string;
+      if (cfg.brand === 'doubao') {
+        // 用一个轻量的 Responses API 调用来测试豆包连通性
+        const url = cfg.baseUrl.replace(/\/chat\/completions\/?$/, '/responses');
+        const body = JSON.stringify({
+          model: cfg.modelId,
+          stream: false,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: '请只回复 OK 两个字，不要其他内容' }] }],
+          max_output_tokens: 8,
+        });
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+          body,
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          throw new Error(`${BRAND_PRESETS[cfg.brand].label} 返回 ${res.status}${errText ? `：${errText.slice(0, 200)}` : ''}`);
+        }
+        const data = await res.json();
+        resp = data?.output_text || data?.output?.find((o: any) => o?.type === 'message')?.content?.find((c: any) => c?.type === 'output_text')?.text || '(无文本)';
+      } else {
+        resp = await postChat(cfg, [
+          { role: 'user', content: '请只回复 OK 两个字，不要其他内容' },
+        ], { maxTokens: 8 });
+      }
+      const ms = Date.now() - t0;
+      Alert.alert('✅ 连通成功', `「${cfg.name}」响应正常，耗时 ${ms}ms\n模型回复：${resp.trim()}`);
+    } catch (e: any) {
+      const ms = Date.now() - t0;
+      Alert.alert('❌ 连通失败', `「${cfg.name}」在 ${ms}ms 后失败\n\n${e?.message || '未知错误'}`);
+    } finally {
+      setTestingId(null);
+    }
   };
 
   const save = async () => {
@@ -171,9 +218,24 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
                     {cfg.isDefaultVision && <Text style={styles.badge}>视觉默认</Text>}
                     {cfg.isVision && <Text style={styles.badgeGray}>支持图片</Text>}
                     {cfg.webSearch && <Text style={styles.badgeSearch}>联网搜索</Text>}
+                    {cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-') && (
+                      <Text style={styles.badgeWarning}>⚠️ 模型标识有误</Text>
+                    )}
                   </View>
                   <TouchableOpacity style={styles.delBtn} onPress={() => remove(cfg)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="trash-outline" size={18} color={COLORS.danger || '#ef4444'} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.testBtn, testingId === cfg.id && styles.testBtnLoading]}
+                    onPress={() => testConnection(cfg)}
+                    disabled={testingId !== null}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    {testingId === cfg.id ? (
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    ) : (
+                      <Ionicons name="cellular" size={16} color={COLORS.primary} />
+                    )}
                   </TouchableOpacity>
                 </TouchableOpacity>
               );
@@ -311,7 +373,10 @@ const styles = StyleSheet.create({
   badge: { fontSize: 11, color: '#fff', backgroundColor: COLORS.primary, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   badgeGray: { fontSize: 11, color: COLORS.textLight, backgroundColor: COLORS.background || '#eee', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   badgeSearch: { fontSize: 11, color: '#fff', backgroundColor: '#10B981', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  badgeWarning: { fontSize: 11, color: '#fff', backgroundColor: '#F59E0B', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   delBtn: { position: 'absolute', top: 12, right: 12 },
+  testBtn: { position: 'absolute', top: 12, right: 38, padding: 4 },
+  testBtnLoading: { opacity: 0.5 },
   tip: { fontSize: 12, color: COLORS.textLighter, marginTop: 8, lineHeight: 18 },
   label: { fontSize: 13, fontWeight: '600', color: COLORS.textLight, marginTop: 14, marginBottom: 8 },
   note: { fontSize: 12, color: COLORS.textLighter, marginTop: 6, marginBottom: 4 },

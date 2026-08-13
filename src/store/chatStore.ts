@@ -31,6 +31,8 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
   },
 
   send: async (text, images, systemContext, search, cfgOverride) => {
+    // 🔧 调试日志：确认 ChatPage 传下来的 cfgOverride 是否存在
+    console.log(`[chatStore.send] cfgOverride=${!!cfgOverride ? cfgOverride.name + '(' + cfgOverride.brand + ')' : 'undefined'}, search=${search}`);
     const userMsg: ChatMessage = {
       id: generateId(),
       role: 'user',

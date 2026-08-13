@@ -58,6 +58,10 @@ const buildBody = (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts, strea
 // 非流式
 export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts = {}): Promise<string> => {
   if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
+  // 🔧 运行时保护：豆包模型标识必须是 ep-xxxx，否则火山方舟会 404 或行为异常
+  if (cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-')) {
+    console.warn(`[model] ⚠️ 豆包模型标识 "${cfg.modelId}" 不是 ep- 开头的接入点 ID！火山方舟可能无法正确路由此请求。请到「管理 AI 模型」修正该模型的标识为 ep-xxxx 格式。`);
+  }
   const res = await fetch(cfg.baseUrl, {
     method: 'POST',
     headers: {
@@ -283,6 +287,10 @@ export const postChatStream = (
   new Promise<string>((resolve, reject) => {
     (async () => {
       if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
+      // 🔧 运行时保护：豆包模型标识必须是 ep-xxxx
+      if (cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-')) {
+        console.warn(`[model] ⚠️ 豆包模型标识 "${cfg.modelId}" 不是 ep- 开头的接入点 ID！火山方舟可能无法正确路由此请求。`);
+      }
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', cfg.baseUrl);

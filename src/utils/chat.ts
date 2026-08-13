@@ -239,6 +239,8 @@ export const sendChatStream = (
         cfg = await getActiveConfig(hasImages);
       }
       if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
+      // 🔧 调试日志：确认实际使用的模型配置（品牌/端点/模型标识），方便排查「设了豆包但走了 GLM」的问题
+      console.log(`[Chat] 使用模型: brand=${cfg.brand}, modelId=${cfg.modelId}, baseUrl=${cfg.baseUrl}, isVision=${cfg.isVision}, webSearch=${cfg.webSearch}, override=${!!cfgOverride}`);
 
       type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
       const payload: { role: string; content: string | ContentPart[] }[] = [];
