@@ -8,7 +8,6 @@ import TimerCard from '../components/TimerCard';
 import StatCard from '../components/StatCard';
 import LedgerQuickSheet from '../components/LedgerQuickSheet';
 import MealQuickSheet from '../components/MealQuickSheet';
-import HealthImportSheet from '../components/HealthImportSheet';
 import { useSessionStore } from '../store/sessionStore';
 import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
@@ -23,8 +22,6 @@ import {
   setDailyActivity,
   generateId,
   ExerciseRecord,
-  getHealthDaily,
-  HealthDaily,
 } from '../utils/storage';
 import {
   calcDayEnergy,
@@ -90,8 +87,6 @@ const HomePage: React.FC = () => {
   const [exDuration, setExDuration] = useState('30');
   const [exKcal, setExKcal] = useState('');
   const [estimatingEx, setEstimatingEx] = useState(false);
-  const [healthModal, setHealthModal] = useState(false);
-  const [health, setHealth] = useState<HealthDaily | null>(null);
 
   const loadMeals = async () => {
     const t = toDateStr(new Date());
@@ -104,7 +99,6 @@ const HomePage: React.FC = () => {
     const t = toDateStr(new Date());
     setDayEnergy(await calcDayEnergy(t));
     setActivity(await getDailyActivity(t));
-    setHealth(await getHealthDaily(t));
     const types = await getExerciseTypes();
     setExTypes(types);
     if (!exType || !types.includes(exType)) setExType(types[0]);
@@ -560,20 +554,6 @@ const HomePage: React.FC = () => {
           </View>
         )}
 
-        {health && (health.steps || health.sleepMin || health.restingHr) && (
-          <View style={styles.healthRow}>
-            <Ionicons name="watch-outline" size={14} color="#1D4ED8" />
-            <Text style={styles.healthText}>
-              {[
-                health.steps !== undefined ? `${health.steps} 步` : '',
-                health.sleepMin !== undefined ? `睡眠 ${Math.round((health.sleepMin / 60) * 10) / 10}h` : '',
-                health.restingHr !== undefined ? `静息 ${health.restingHr}bpm` : '',
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </Text>
-          </View>
-        )}
 
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <TouchableOpacity style={[styles.trendBtn, { flex: 1 }]} onPress={() => setTrendVisible(true)}>
@@ -589,10 +569,6 @@ const HomePage: React.FC = () => {
           <TouchableOpacity style={[styles.exAddBtn, { flex: 1 }]} onPress={openExModal}>
             <Ionicons name="add-circle-outline" size={15} color="#fff" />
             <Text style={styles.exAddText}>加运动记录</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.healthBtn} onPress={() => setHealthModal(true)}>
-            <Ionicons name="watch-outline" size={15} color="#1D4ED8" />
-            <Text style={styles.healthBtnText}>手环数据</Text>
           </TouchableOpacity>
         </View>
 
@@ -616,13 +592,6 @@ const HomePage: React.FC = () => {
           loadMeals();
           emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
         }}
-      />
-
-      <HealthImportSheet
-        visible={healthModal}
-        date={toDateStr(new Date())}
-        onClose={() => setHealthModal(false)}
-        onSaved={() => loadActivity()}
       />
     </ScrollView>
 

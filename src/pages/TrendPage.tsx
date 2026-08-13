@@ -14,13 +14,11 @@ import LineChart, { ChartPoint } from '../components/LineChart';
 import {
   getBodyProfileHistory,
   getAllDailyActivity,
-  getAllHealthDaily,
   BodyProfileSnapshot,
   DailyActivity,
-  HealthDaily,
 } from '../utils/storage';
 
-type Tab = 'body' | 'exercise' | 'health';
+type Tab = 'body' | 'exercise';
 
 interface TrendPageProps {
   visible: boolean;
@@ -34,22 +32,19 @@ const TrendPage: React.FC<TrendPageProps> = ({ visible, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [body, setBody] = useState<BodyProfileSnapshot[]>([]);
   const [activity, setActivity] = useState<Record<string, DailyActivity>>({});
-  const [health, setHealth] = useState<Record<string, HealthDaily>>({});
 
   useEffect(() => {
     if (!visible) return;
     let alive = true;
     (async () => {
       setLoading(true);
-      const [b, a, h] = await Promise.all([
+      const [b, a] = await Promise.all([
         getBodyProfileHistory(),
         getAllDailyActivity(),
-        getAllHealthDaily(),
       ]);
       if (!alive) return;
       setBody(b);
       setActivity(a);
-      setHealth(h);
       setLoading(false);
     })();
     return () => {
@@ -78,14 +73,7 @@ const TrendPage: React.FC<TrendPageProps> = ({ visible, onClose }) => {
     value: activity[d].exercises.length,
   }));
 
-  // —— 健康数据 ——
-  const hDates = Object.keys(health).sort();
-  const hSteps: ChartPoint[] = hDates.map((d) => ({ label: dLabel(d), value: health[d].steps || 0 }));
-  const hSleep: ChartPoint[] = hDates.map((d) => ({
-    label: dLabel(d),
-    value: health[d].sleepMin ? Math.round((health[d].sleepMin / 60) * 10) / 10 : 0,
-  }));
-  const hHr: ChartPoint[] = hDates.map((d) => ({ label: dLabel(d), value: health[d].restingHr || 0 }));
+  // —— 身体指标与运动记录（已移除手环健康数据） ——
 
   const renderBody = () => (
     <View>
@@ -121,17 +109,6 @@ const TrendPage: React.FC<TrendPageProps> = ({ visible, onClose }) => {
     </View>
   );
 
-  const renderHealth = () => (
-    <View>
-      <ChartCard title="步数" data={hSteps} color={COLORS.primary} unit="步" />
-      <ChartCard title="睡眠时长 (小时)" data={hSleep} color={COLORS.success} unit="h" />
-      <ChartCard title="静息心率 (bpm)" data={hHr} color={COLORS.danger} unit="bpm" />
-      {hDates.length === 0 && (
-        <Text style={styles.hint}>还没有手环数据。在「今日活动量 → 手环数据」里导入华为运动健康导出文件。</Text>
-      )}
-    </View>
-  );
-
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.screen}>
@@ -146,7 +123,6 @@ const TrendPage: React.FC<TrendPageProps> = ({ visible, onClose }) => {
         <View style={styles.tabs}>
           <TabBtn label="身体指标" active={tab === 'body'} onPress={() => setTab('body')} />
           <TabBtn label="运动记录" active={tab === 'exercise'} onPress={() => setTab('exercise')} />
-          <TabBtn label="健康数据" active={tab === 'health'} onPress={() => setTab('health')} />
         </View>
 
         {loading ? (
@@ -157,7 +133,6 @@ const TrendPage: React.FC<TrendPageProps> = ({ visible, onClose }) => {
           <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
             {tab === 'body' && renderBody()}
             {tab === 'exercise' && renderExercise()}
-            {tab === 'health' && renderHealth()}
             <View style={{ height: 40 }} />
           </ScrollView>
         )}

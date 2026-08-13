@@ -30,17 +30,16 @@ import {
   deleteFoodItem,
   FoodItem,
 } from '../utils/nutrition';
-import { getApiKey, getHealthDaily, getBodyProfile } from '../utils/storage';
+import { getApiKey, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
 import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import CalendarPicker, { WEEK_LABELS } from './CalendarPicker';
 import NutritionDetail from './NutritionDetail';
 
-// 计算当天「身体+运动+TDEE+手环」上下文，传给 AI 估算，让三餐建议带上运动数据
+// 计算当天「身体+运动+TDEE」上下文，传给 AI 估算，让三餐建议带上运动数据
 const buildMealContext = async (date: string): Promise<MealContext | undefined> => {
   try {
     const energy = await calcDayEnergy(date);
-    const health = await getHealthDaily(date);
     const p = await getBodyProfile();
     return {
       bmr: energy.bmr,
@@ -48,9 +47,6 @@ const buildMealContext = async (date: string): Promise<MealContext | undefined> 
       tdee: energy.tdee,
       exerciseKcal: energy.exerciseKcal,
       baseLevel: energy.baseLevel,
-      steps: health?.steps ?? null,
-      activeKcal: health?.activeKcal ?? null,
-      sleepMin: health?.sleepMin ?? null,
     };
   } catch (e) {
     return undefined;
@@ -134,7 +130,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       setEntries(list);
       buildMealContext(dateStr).then((c) => {
         if (c) {
-          setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal' + (c.steps != null ? ' · 手环 ' + c.steps + ' 步' : ''));
+          setEnergySummary('🔥今日运动消耗约 ' + c.exerciseKcal + ' kcal · 可摄入总量 ' + c.tdee + ' kcal');
           setTdee(c.tdee || 0);
           setProteinTarget(calcProteinTarget(c.weight));
         } else {

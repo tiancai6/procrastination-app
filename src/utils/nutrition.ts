@@ -7,16 +7,13 @@ import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy } f
 
 const MEALS_KEY = 'meal_entries';
 
-// 当日身体/运动/手环上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
+// 当日身体/运动上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
 export interface MealContext {
   bmr: number;
   weight: number; // 体重 kg（用于动态蛋白目标）
   tdee: number;
   exerciseKcal: number;
   baseLevel: 'sedentary' | 'light' | 'moderate' | 'high';
-  steps?: number | null;
-  activeKcal?: number | null;
-  sleepMin?: number | null;
 }
 
 const BASE_LEVEL_LABEL: Record<MealContext['baseLevel'], string> = {
@@ -26,16 +23,13 @@ const BASE_LEVEL_LABEL: Record<MealContext['baseLevel'], string> = {
   high: '高强度活动',
 };
 
-// 把当日身体/运动/手环数据拼成一段中文，注入营养估算 prompt。
+// 把当日身体/运动数据拼成一段中文，注入营养估算 prompt。
 const buildMealContextText = (ctx: MealContext): string => {
   const parts: string[] = [];
   parts.push('【今日身体与运动情况，用于判断这顿饭是否合适】');
   parts.push('- 基础代谢(BMR)：约 ' + ctx.bmr + ' kcal');
   parts.push('- 今日运动消耗：约 ' + ctx.exerciseKcal + ' kcal（基础活动强度：' + BASE_LEVEL_LABEL[ctx.baseLevel] + '）');
   parts.push('- 今日可摄入总量(TDEE，含运动)：约 ' + ctx.tdee + ' kcal');
-  if (ctx.steps != null) parts.push('- 手环步数：' + ctx.steps + ' 步');
-  if (ctx.activeKcal != null) parts.push('- 手环活动消耗：' + ctx.activeKcal + ' kcal');
-  if (ctx.sleepMin != null) parts.push('- 昨晚睡眠：' + Math.floor(ctx.sleepMin / 60) + ' 小时 ' + (ctx.sleepMin % 60) + ' 分');
   parts.push('请结合「今日可摄入总量 ' + ctx.tdee + ' kcal」判断这顿饭的 adequacy：运动消耗大可放宽、久坐少动要更克制；在 comment 里点明这顿与今日运动是否匹配、建议多吃还是少吃。');
   return parts.join('\n');
 };
@@ -228,7 +222,7 @@ const NUTRITION_SYSTEM_PROMPT = `你是一位营养师。用户会告诉你某�
 5. water 是这顿摄入的液体量(ml)，如豆浆/汤/牛奶；没有则填 0。
 参考全天推荐量：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、膳食纤维约25g、饮水约1500ml；按这顿占全天的合理比例判断 adequacy。
 基于常见食物成分表合理估算，不要编造具体品牌的营养标签；只输出 JSON。
-如果用户在该餐消息里提供了「当日身体与运动情况」（基础代谢、运动消耗、今日可摄入总量TDEE、手环步数/消耗/睡眠等），请务必据此判断 adequacy：把这顿的热量与「今日可摄入总量」的对应比例对照，运动量消耗大时可放宽、久坐少动时要更克制；并在 comment 里点明这顿与今日运动是否匹配、建议用户多吃还是少吃。
+如果用户在该餐消息里提供了「当日身体与运动情况」（基础代谢、运动消耗、今日可摄入总量TDEE等），请务必据此判断 adequacy：把这顿的热量与「今日可摄入总量」的对应比例对照，运动量消耗大时可放宽、久坐少动时要更克制；并在 comment 里点明这顿与今日运动是否匹配、建议用户多吃还是少吃。
 `;
 
 export interface EstimateResult {
@@ -386,7 +380,7 @@ export const requestMealAdjustmentAdvice = async (
   const cfg = await getActiveConfig(false);
   if (!cfg) return { text: '', status: 'nokey' };
   const ctxText = ctx
-    ? '\n【今日运动情况】基础代谢约' + ctx.bmr + 'kcal、运动消耗约' + ctx.exerciseKcal + 'kcal、今日可摄入总量(TDEE)约' + ctx.tdee + 'kcal' + (ctx.steps != null ? '、手环步数' + ctx.steps + '步' : '') + '。请结合今日运动消耗给出饮食调整建议。'
+    ? '\n【今日运动情况】基础代谢约' + ctx.bmr + 'kcal、运动消耗约' + ctx.exerciseKcal + 'kcal、今日可摄入总量(TDEE)约' + ctx.tdee + 'kcal。请结合今日运动消耗给出饮食调整建议。'
     : '';
   const prompt = `你是营养师。以下是某段时间的每日三餐记录与营养摄入情况：
 ${mealsSummary}

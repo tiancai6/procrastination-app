@@ -1,7 +1,7 @@
 // 把用户勾选的个人数据拼成给 AI 的上下文。
 // 支持类别（餐饮/规划打卡/专注计时/随手记/聊天记录）、两档（总结/原始明细）、时间范围（今天/近7天/本月）。
 
-export type DataCategory = 'meal' | 'plan' | 'focus' | 'memo' | 'chat' | 'health';
+export type DataCategory = 'meal' | 'plan' | 'focus' | 'memo' | 'chat';
 export type ContextLevel = 'summary' | 'raw';
 export type DateRange = 'today' | '7d' | 'month';
 
@@ -14,11 +14,7 @@ import {
   getTimerSessions,
   getQuickMemos,
   getChatMessages,
-  getAllHealthDaily,
-  getAllDailyActivity,
-  getBodyProfile,
 } from './storage';
-import { calcBMR, BASE_LEVEL_LABEL, DEFAULT_BODY_PROFILE, ACTIVITY_FACTOR } from './activity';
 
 const MEAL_LABEL: Record<string, string> = {
   breakfast: '早餐',
@@ -120,47 +116,7 @@ const buildPlan = async (level: ContextLevel, start: number): Promise<string> =>
   return `【规划打卡·明细】\n${lines.join('\n') || '无记录'}`;
 };
 
-// 手环数据 + 当天活动量/TDEE
-const buildHealth = async (level: ContextLevel, start: number): Promise<string> => {
-  const startStr = toDayStr(new Date(start));
-  const healthMap = await getAllHealthDaily();
-  const actMap = await getAllDailyActivity();
-  const profile = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
-  const bmr = calcBMR(profile);
-
-  const dates = Array.from(new Set([...Object.keys(healthMap), ...Object.keys(actMap)]))
-    .filter((d) => d >= startStr)
-    .sort()
-    .reverse();
-  if (dates.length === 0) return '【运动与手环】该时间段无记录';
-
-  const header = `身体：${profile.gender === 'male' ? '男' : '女'} ${profile.age}岁 ${profile.height}cm ${profile.weight}kg，基础代谢约${bmr}kcal`;
-
-  const lineOf = (d: string): string => {
-    const h = healthMap[d];
-    const a = actMap[d];
-    const exKcal = a ? a.exercises.reduce((s, e) => s + (e.kcal || 0), 0) : 0;
-    const tdee = a ? Math.round(bmr * ACTIVITY_FACTOR[a.baseLevel] + exKcal) : undefined;
-    const seg = [
-      a ? `活动量${BASE_LEVEL_LABEL[a.baseLevel]}` : '',
-      a && a.exercises.length
-        ? `运动：${a.exercises.map((e) => `${e.type}${e.durationMin}分钟${e.kcal ? `(${e.kcal}kcal)` : ''}`).join('、')}`
-        : '',
-      tdee !== undefined ? `总消耗约${tdee}kcal` : '',
-      h?.steps !== undefined ? `${h.steps}步` : '',
-      h?.sleepMin !== undefined ? `睡眠${Math.round((h.sleepMin / 60) * 10) / 10}h` : '',
-      h?.restingHr !== undefined ? `静息心率${h.restingHr}` : '',
-      h?.activeKcal !== undefined ? `手环活动消耗${h.activeKcal}kcal` : '',
-    ].filter(Boolean);
-    return `${d}: ${seg.join(' · ')}`;
-  };
-
-  if (level === 'summary') {
-    return `【运动与手环·摘要】${header}\n${dates.slice(0, 7).map(lineOf).join('\n')}`;
-  }
-  return `【运动与手环·明细】${header}\n${dates.slice(0, 60).map(lineOf).join('\n')}`;
-};
-
+// ============ 专注计时 ============
 const buildFocus = async (level: ContextLevel, start: number): Promise<string> => {
   const sessions = await getTimerSessions();
   const inRange = sessions.filter((s) => s.startTime >= start);
@@ -224,7 +180,6 @@ export const buildChatContext = async (
   if (selected.includes('focus')) parts.push(await buildFocus(level, start));
   if (selected.includes('memo')) parts.push(await buildMemo(level, start));
   if (selected.includes('chat')) parts.push(await buildChat(level, start));
-  if (selected.includes('health')) parts.push(await buildHealth(level, start));
 
   if (parts.length === 0) return '';
   return `以下是用户选择携带的个人数据（${label}${level === 'summary' ? '·总结' : '·原始明细'}），请参考作答：\n\n${parts.join('\n\n')}`;

@@ -33,6 +33,5 @@ export const ALL_DATA_KEYS = [
   'body_profile', // BODY_PROFILE_KEY
   'body_profile_history', // BODY_PROFILE_HISTORY_KEY（身体信息历史快照，趋势折线图用）
   'daily_activity', // DAILY_ACTIVITY_KEY
-  'health_daily', // HEALTH_DAILY_KEY（手环/健康导入数据）
   'model_configs', // MODEL_CONFIGS_KEY（多模型配置：GLM/豆包/DeepSeek/Gemini）
 ];
