@@ -19,9 +19,6 @@ const StatsCenterPage: React.FC = () => {
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.title}>统计中心</Text>
-          <TouchableOpacity style={styles.calBtn} onPress={() => navigation.navigate('ExerciseCalendar')}>
-            <Ionicons name="calendar-outline" size={20} color="#fff" />
-          </TouchableOpacity>
         </View>
         <View style={styles.segment}>
           <TouchableOpacity
@@ -58,6 +55,10 @@ const StatsCenterPage: React.FC = () => {
               color={segment === 'meal' ? '#fff' : COLORS.textLight}
             />
             <Text style={[styles.segmentText, segment === 'meal' && styles.segmentTextActive]}>三餐</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.segmentBtn} onPress={() => navigation.navigate('ExerciseCalendar')}>
+            <Ionicons name="barbell-outline" size={15} color={COLORS.textLight} />
+            <Text style={styles.segmentText}>运动</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -103,11 +104,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  calBtn: {
-    padding: 8,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.18)',
   },
   segment: {
     flexDirection: 'row',

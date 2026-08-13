@@ -15,6 +15,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
 import { MealType, MealEntry, MealNutritionItem } from '../types';
 import {
@@ -90,6 +91,7 @@ interface SnackInput {
 }
 
 const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) => {
+  const navigation = useNavigation<any>();
   const [dateStr, setDateStr] = useState(date);
   const [energySummary, setEnergySummary] = useState('');
   const [contents, setContents] = useState<Record<MealType, string>>({ breakfast: '', lunch: '', dinner: '', snack: '' });
@@ -162,6 +164,11 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     });
     return () => sub.remove();
   }, [visible, entries, dateStr]);
+
+  // 每次打开食物库选择面板时刷新列表（从「管理食物库」返回后能看到最新增删）
+  useEffect(() => {
+    if (showFoodPicker) getFoodLibrary().then(setFoodLib);
+  }, [showFoodPicker]);
 
   const setContent = (t: MealType, v: string) => setContents((c) => ({ ...c, [t]: v }));
 
@@ -526,9 +533,18 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                     <Text style={styles.foodBoxTitle}>
                       食物库（点选加入「{foodTarget?.type === 'snack' ? '加餐' : (foodTarget?.type ? MEAL_FIELDS.find((m) => m.key === foodTarget.type)?.label : '')}」）
                     </Text>
-                    <TouchableOpacity onPress={() => setShowFoodPicker(false)}>
-                      <Ionicons name="close" size={18} color={COLORS.textLight} />
-                    </TouchableOpacity>
+                    <View style={styles.foodBoxHeadActions}>
+                      <TouchableOpacity
+                        style={styles.foodManageBtn}
+                        onPress={() => navigation.navigate('FoodLibrary')}
+                      >
+                        <Ionicons name="settings-outline" size={14} color={COLORS.primary} />
+                        <Text style={styles.foodManageText}>管理</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => setShowFoodPicker(false)}>
+                        <Ionicons name="close" size={18} color={COLORS.textLight} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   {foodLib.length === 0 && <Text style={styles.foodEmpty}>还没有保存的食物，估算后点「存为食物」即可加入</Text>}
                   {foodLib.map((f) => (
@@ -874,6 +890,9 @@ const styles = StyleSheet.create({
   },
   foodBoxHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   foodBoxTitle: { fontSize: 13.5, fontWeight: '700', color: COLORS.text },
+  foodBoxHeadActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  foodManageBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  foodManageText: { fontSize: 12.5, color: COLORS.primary, fontWeight: '600' },
   foodEmpty: { fontSize: 12.5, color: COLORS.textLight, marginBottom: 8 },
   foodItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: COLORS.border },
   foodItemMain: { flex: 1, marginRight: 10 },

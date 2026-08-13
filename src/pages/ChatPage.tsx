@@ -48,6 +48,7 @@ import {
 import { onDataReset } from '../utils/appEvents';
 import ProfileModal from '../components/ProfileModal';
 import { useChatStore } from '../store/chatStore';
+import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import { buildChatContext, DataCategory, ContextLevel, DateRange } from '../utils/chatContext';
 
 const SYSTEM_CONTEXT_PROMPT = (summary: string) =>
@@ -81,6 +82,11 @@ const ChatPage: React.FC = () => {
   const [ctxRange, setCtxRange] = useState<DateRange>('today');
   // 联网搜索开关（本轮对话强制联网，按品牌走 web_search / Google grounding）
   const [webSearch, setWebSearch] = useState(false);
+  // 对话可选模型（默认走全局默认模型，可手动切换）
+  const [models, setModels] = useState<ModelConfig[]>([]);
+  const [selModelId, setSelModelId] = useState('');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const selCfg: ModelConfig | undefined = selModelId ? models.find((m) => m.id === selModelId) || undefined : undefined;
   const [meta, setMeta] = useState<ChatMeta>({ compressCount: 0, lastCompressedAt: null });
   const [compressLoading, setCompressLoading] = useState(false);
 
@@ -116,6 +122,7 @@ const ChatPage: React.FC = () => {
     setMeta(m);
     setModel(md || 'glm-4-flash');
     setVisionModel(vmd || 'glm-4v-flash');
+    setModels(await getModelConfigs());
     loaded.current = true;
   };
 
@@ -199,7 +206,7 @@ const ChatPage: React.FC = () => {
         .filter(Boolean)
         .join('\n\n');
       // 发消息交给全局 chatStore（AI 在后台流式跑），切走页面再切回结果不丢
-      await chatSend(text, pendingImages, finalCtx || undefined, webSearch);
+      await chatSend(text, pendingImages, finalCtx || undefined, webSearch, selCfg);
     } catch (e: any) {
       Alert.alert('发送失败', e?.message ? String(e.message) : '请检查网络或 API Key');
     }
@@ -439,6 +446,34 @@ const ChatPage: React.FC = () => {
         {/* 输入栏 */}
         {!isSelecting && (
           <View style={styles.dataBar}>
+            <TouchableOpacity style={styles.modelPickRow} onPress={() => setShowModelPicker((v) => !v)}>
+              <Ionicons name="swap-horizontal-outline" size={14} color={COLORS.primary} />
+              <Text style={styles.modelPickText}>
+                对话模型：{selCfg ? selCfg.name : '默认（' + (models.find((m) => m.isDefault)?.name || '未配置') + '）'}
+              </Text>
+              <Ionicons name="chevron-down" size={14} color={COLORS.textLight} />
+            </TouchableOpacity>
+            {showModelPicker && (
+              <View style={styles.modelPickBox}>
+                <TouchableOpacity
+                  style={[styles.modelPickItem, !selModelId && styles.modelPickItemActive]}
+                  onPress={() => { setSelModelId(''); setShowModelPicker(false); }}
+                >
+                  <Text style={styles.modelPickItemText}>默认（{models.find((m) => m.isDefault)?.name || '未配置'}）</Text>
+                </TouchableOpacity>
+                {models.map((m) => (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[styles.modelPickItem, selModelId === m.id && styles.modelPickItemActive]}
+                    onPress={() => { setSelModelId(m.id); setShowModelPicker(false); }}
+                  >
+                    <Text style={styles.modelPickItemText}>
+                      {m.name}{m.isVision ? ' · 视觉' : ''}{m.webSearch ? ' · 搜索' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
             <View style={styles.dataBarHead}>
               <Ionicons name="folder-open-outline" size={14} color={COLORS.textLight} />
               <Text style={styles.dataBarTitle}>携带数据（AI 可参考）</Text>
@@ -949,6 +984,38 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8,
   },
+  modelPickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 0.5,
+    borderColor: '#C7D2FE',
+    marginBottom: 8,
+  },
+  modelPickText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  modelPickBox: {
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  modelPickItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 6,
+    backgroundColor: COLORS.card,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  modelPickItemActive: { backgroundColor: '#EDE9FE', borderColor: COLORS.primary },
+  modelPickItemText: { fontSize: 13.5, color: COLORS.text },
   dataBarHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   dataBarTitle: { flex: 1, fontSize: 12.5, color: COLORS.textLight, marginLeft: 6, fontWeight: '600' },
   dataClear: { fontSize: 12, color: COLORS.primary, fontWeight: '600' },

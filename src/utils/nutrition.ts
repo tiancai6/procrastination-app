@@ -447,3 +447,10 @@ export const deleteFoodItem = async (id: string): Promise<FoodItem[]> => {
   await saveFoodLibrary(next);
   return next;
 };
+
+export const updateFoodItem = async (id: string, patch: Partial<Omit<FoodItem, 'id'>>): Promise<FoodItem[]> => {
+  const list = await getFoodLibrary();
+  const next = list.map((x) => (x.id === id ? { ...x, ...patch } : x));
+  await saveFoodLibrary(next);
+  return next;
+};

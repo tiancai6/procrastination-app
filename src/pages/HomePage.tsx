@@ -38,6 +38,7 @@ import {
   BodyProfile,
 } from '../utils/activity';
 import TrendPage from './TrendPage';
+import ModelConfigPage from './ModelConfigPage';
 import { LedgerEntry, MealEntry, MealType, NutritionResult } from '../types';
 
 const toDateStr = (d: Date): string => {
@@ -79,6 +80,7 @@ const HomePage: React.FC = () => {
   const [ocrMsg, setOcrMsg] = useState('');
   const [exModal, setExModal] = useState(false);
   const [trendVisible, setTrendVisible] = useState(false);
+  const [showModelCfg, setShowModelCfg] = useState(false);
   const [exTypes, setExTypes] = useState<string[]>(DEFAULT_EXERCISE_TYPES);
   const [exType, setExType] = useState('');
   const [exCustom, setExCustom] = useState('');
@@ -570,6 +572,24 @@ const HomePage: React.FC = () => {
             <Ionicons name="add-circle-outline" size={15} color="#fff" />
             <Text style={styles.exAddText}>加运动记录</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={[styles.modelBtn, { flex: 1 }]} onPress={() => setShowModelCfg(true)}>
+            <Ionicons name="swap-horizontal-outline" size={15} color="#fff" />
+            <Text style={styles.modelBtnText}>修改模型</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.activityBtnRow}>
+          <TouchableOpacity
+            style={[styles.estimateTodayBtn, { flex: 1 }, estimating && styles.mealEstimateDisabled]}
+            onPress={handleEstimateMeal}
+            disabled={estimating}
+          >
+            {estimating ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="sparkles-outline" size={15} color="#fff" />
+            )}
+            <Text style={styles.estimateTodayText}>AI 估算今日营养</Text>
+          </TouchableOpacity>
         </View>
 
         {todayNutrition && (
@@ -596,6 +616,9 @@ const HomePage: React.FC = () => {
     </ScrollView>
 
       <TrendPage visible={trendVisible} onClose={() => setTrendVisible(false)} />
+
+      {/* 模型管理（修改/新增 AI 模型，首页与统计中心共用） */}
+      <ModelConfigPage visible={showModelCfg} onClose={() => setShowModelCfg(false)} />
 
       {/* 身体信息 Modal */}
       <Modal visible={bodyModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setBodyModal(false); }}>
@@ -1203,6 +1226,26 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
   },
   trendBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '700' },
+  modelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: '#0EA5E9',
+  },
+  modelBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  estimateTodayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: '#8B5CF6',
+  },
+  estimateTodayText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   healthRow: {
     flexDirection: 'row',
     alignItems: 'center',

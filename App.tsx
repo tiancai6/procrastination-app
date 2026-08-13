@@ -10,6 +10,7 @@ import PlanListPage from './src/pages/PlanListPage';
 import QuickMemoPage from './src/pages/QuickMemoPage';
 import ChatPage from './src/pages/ChatPage';
 import ExerciseCalendarPage from './src/pages/ExerciseCalendarPage';
+import FoodLibraryPage from './src/pages/FoodLibraryPage';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
@@ -141,6 +142,7 @@ export const App: React.FC = () => {
             )}
           </Stack.Screen>
           <Stack.Screen name="ExerciseCalendar" component={ExerciseCalendarPage} options={{ headerShown: false }} />
+          <Stack.Screen name="FoodLibrary" component={FoodLibraryPage} options={{ headerShown: false }} />
         </Stack.Navigator>
       </NavigationContainer>
 

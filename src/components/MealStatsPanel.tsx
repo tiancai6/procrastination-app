@@ -24,6 +24,7 @@ import {
   NUTRITION_TARGETS,
 } from '../utils/nutrition';
 import { getApiKey } from '../utils/storage';
+import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import NutritionDetail from './NutritionDetail';
 import SwipeableRow from './SwipeableRow';
@@ -171,6 +172,12 @@ const MealStatsPanel: React.FC = () => {
 
   const toggleMeal = (id: string) => setOpenMeals((s) => ({ ...s, [id]: !s[id] }));
 
+  // 估算可选模型（统计中心一键估算也支持指定模型）
+  const [models, setModels] = useState<ModelConfig[]>([]);
+  const [selModelId, setSelModelId] = useState('');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const selCfg: ModelConfig | undefined = selModelId ? models.find((m) => m.id === selModelId) || undefined : undefined;
+
   // 单条餐记录编辑 / 删除（像消费一样可改记录）
   const [sheetVisible, setSheetVisible] = useState(false);
   const [sheetEntry, setSheetEntry] = useState<MealEntry | null>(null);
@@ -199,9 +206,10 @@ const MealStatsPanel: React.FC = () => {
   };
 
   const load = useCallback(async () => {
-    const [m, c] = await Promise.all([getMeals(), getAllNutrition()]);
+    const [m, c, md] = await Promise.all([getMeals(), getAllNutrition(), getModelConfigs()]);
     setAllMeals(m);
     setCache(c);
+    setModels(md);
   }, []);
 
   useEffect(() => {
@@ -398,7 +406,12 @@ const MealStatsPanel: React.FC = () => {
     }
     setEstimating(true);
     setEstProgress(`估算中 0/${mealsWithoutNutrition.length}`);
-    await estimateMissingMeals(allMeals, (done, total) => setEstProgress(`估算中 ${done}/${total}`));
+    await estimateMissingMeals(
+      allMeals,
+      (done, total) => setEstProgress(`估算中 ${done}/${total}`),
+      undefined,
+      selCfg,
+    );
     setEstimating(false);
     setEstProgress('');
     await load();
@@ -545,6 +558,38 @@ const MealStatsPanel: React.FC = () => {
             ) : null}
           </View>
         )}
+
+        {/* 估算模型选择（统计中心一键估算也支持指定模型） */}
+        <View style={styles.modelPickWrap}>
+          <TouchableOpacity style={styles.modelPickRow} onPress={() => setShowModelPicker((v) => !v)}>
+            <Ionicons name="swap-horizontal-outline" size={14} color={COLORS.primary} />
+            <Text style={styles.modelPickText}>
+              估算模型：{selCfg ? selCfg.name : '默认（' + (models.find((m) => m.isDefault)?.name || '未配置') + '）'}
+            </Text>
+            <Ionicons name="chevron-down" size={14} color={COLORS.textLight} />
+          </TouchableOpacity>
+          {showModelPicker && (
+            <View style={styles.modelPickBox}>
+              <TouchableOpacity
+                style={[styles.modelPickItem, !selModelId && styles.modelPickItemActive]}
+                onPress={() => { setSelModelId(''); setShowModelPicker(false); }}
+              >
+                <Text style={styles.modelPickItemText}>默认（{models.find((m) => m.isDefault)?.name || '未配置'}）</Text>
+              </TouchableOpacity>
+              {models.map((m) => (
+                <TouchableOpacity
+                  key={m.id}
+                  style={[styles.modelPickItem, selModelId === m.id && styles.modelPickItemActive]}
+                  onPress={() => { setSelModelId(m.id); setShowModelPicker(false); }}
+                >
+                  <Text style={styles.modelPickItemText}>
+                    {m.name}{m.isVision ? ' · 视觉' : ''}{m.webSearch ? ' · 搜索' : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
 
         {/* 一键补全缺失日期估算 */}
         {mealsWithoutNutrition.length > 0 && (
@@ -951,6 +996,42 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  modelPickWrap: {
+    marginTop: 12,
+    marginHorizontal: 16,
+  },
+  modelPickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 0.5,
+    borderColor: '#C7D2FE',
+  },
+  modelPickText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  modelPickBox: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  modelPickItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 6,
+    backgroundColor: COLORS.card,
+    borderWidth: 0.5,
+    borderColor: COLORS.border,
+  },
+  modelPickItemActive: { backgroundColor: '#EDE9FE', borderColor: COLORS.primary },
+  modelPickItemText: { fontSize: 13.5, color: COLORS.text },
   section: {
     paddingHorizontal: 16,
     marginTop: 20,

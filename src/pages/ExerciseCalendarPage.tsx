@@ -75,6 +75,7 @@ const ExerciseCalendarPage: React.FC = () => {
   const [checkins, setCheckins] = useState<HabitCheckin[]>([]);
 
   const [sheetVisible, setSheetVisible] = useState(false);
+  const [editing, setEditing] = useState<ExerciseRecord | null>(null);
   const [exType, setExType] = useState('');
   const [exDuration, setExDuration] = useState('');
   const [exNote, setExNote] = useState('');
@@ -153,6 +154,7 @@ const ExerciseCalendarPage: React.FC = () => {
 
   const openDay = (s: string) => {
     setSelected(s);
+    setEditing(null);
     setExType(exTypes[0] || DEFAULT_EXERCISE_TYPES[0]);
     setExDuration('');
     setExNote('');
@@ -160,7 +162,16 @@ const ExerciseCalendarPage: React.FC = () => {
     setSheetVisible(true);
   };
 
-  const handleAdd = async () => {
+  const startEdit = (e: ExerciseRecord) => {
+    setEditing(e);
+    setExType(e.type);
+    setExDuration(String(e.durationMin));
+    setExNote(e.note || '');
+    setExCustom('');
+  };
+
+  // 新增或修改当天的一条运动记录（editing 不为空就是「修改」已存在那条）
+  const handleSave = async () => {
     const dur = parseInt(exDuration, 10);
     if (!dur || dur <= 0) {
       Alert.alert('提示', '请输入有效的时长（分钟）');
@@ -178,16 +189,18 @@ const ExerciseCalendarPage: React.FC = () => {
       typesNow = await addExerciseType(finalType);
       setExTypes(typesNow);
     }
-    const rec: ExerciseRecord = {
-      id: generateId(),
-      type: finalType,
-      durationMin: dur,
-      note: exNote.trim() || undefined,
-    };
     const cur = await getDailyActivity(selected);
-    const next: DailyActivity = { ...cur, exercises: [...cur.exercises, rec] };
-    await setDailyActivity(selected, next);
+    let exercises = cur.exercises.map((e) =>
+      editing && e.id === editing.id
+        ? { ...e, type: finalType, durationMin: dur, note: exNote.trim() || undefined }
+        : e,
+    );
+    if (!editing) {
+      exercises = [...exercises, { id: generateId(), type: finalType, durationMin: dur, note: exNote.trim() || undefined }];
+    }
+    await setDailyActivity(selected, { ...cur, exercises });
     await loadAll();
+    setEditing(null);
     setExDuration('');
     setExNote('');
     setExCustom('');
@@ -198,6 +211,7 @@ const ExerciseCalendarPage: React.FC = () => {
     const cur = await getDailyActivity(selected);
     const next: DailyActivity = { ...cur, exercises: cur.exercises.filter((e) => e.id !== id) };
     await setDailyActivity(selected, next);
+    if (editing && editing.id === id) setEditing(null);
     await loadAll();
   };
 
@@ -221,15 +235,11 @@ const ExerciseCalendarPage: React.FC = () => {
           {d.getDate()}
         </Text>
         {exercises.length > 0 && (
-          <View style={styles.cellExWrap}>
-            {exercises.slice(0, 3).map((e) => (
-              <View key={e.id} style={[styles.cellExBar, { backgroundColor: hashType(e.type) }]}>
-                <Text style={styles.cellExText} numberOfLines={1}>
-                  {e.type} {fmtDur(e.durationMin)}
-                </Text>
-              </View>
+          <View style={styles.cellExDots}>
+            {exercises.slice(0, 4).map((e) => (
+              <View key={e.id} style={[styles.cellExDot, { backgroundColor: hashType(e.type) }]} />
             ))}
-            {exercises.length > 3 && <Text style={styles.cellMore}>+{exercises.length - 3}</Text>}
+            {exercises.length > 4 && <Text style={styles.cellMore}>＋</Text>}
           </View>
         )}
       </TouchableOpacity>
@@ -316,21 +326,35 @@ const ExerciseCalendarPage: React.FC = () => {
                 {dayExercises.length === 0 ? (
                   <Text style={styles.emptyText}>这一天还没有运动记录</Text>
                 ) : (
-                  dayExercises.map((e) => (
-                    <View key={e.id} style={styles.exItem}>
-                      <View style={[styles.exDot, { backgroundColor: hashType(e.type) }]} />
-                      <View style={styles.exBody}>
-                        <Text style={styles.exItemName}>{e.type}</Text>
-                        <Text style={styles.exItemSub}>
-                          时长 {fmtDur(e.durationMin)}
-                          {e.note ? ` · ${e.note}` : ''}
-                        </Text>
-                      </View>
-                      <TouchableOpacity onPress={() => handleDelete(e.id)}>
-                        <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
-                      </TouchableOpacity>
+                  <>
+                    <View style={styles.daySummary}>
+                      <Ionicons name="barbell-outline" size={15} color={COLORS.primary} />
+                      <Text style={styles.daySummaryText}>
+                        共 {dayExercises.length} 项 · 总时长 {fmtDur(dayExercises.reduce((s, e) => s + (e.durationMin || 0), 0))}
+                      </Text>
                     </View>
-                  ))
+                    {dayExercises.map((e) => (
+                      <View
+                        key={e.id}
+                        style={[styles.exItem, editing?.id === e.id && styles.exItemEditing]}
+                      >
+                        <View style={[styles.exDot, { backgroundColor: hashType(e.type) }]} />
+                        <View style={styles.exBody}>
+                          <Text style={styles.exItemName}>{e.type}</Text>
+                          <Text style={styles.exItemSub}>
+                            时长 {fmtDur(e.durationMin)}
+                            {e.note ? ` · ${e.note}` : ''}
+                          </Text>
+                        </View>
+                        <TouchableOpacity style={styles.exAction} onPress={() => startEdit(e)}>
+                          <Ionicons name="create-outline" size={18} color={COLORS.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.exAction} onPress={() => handleDelete(e.id)}>
+                          <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </>
                 )}
 
                 {/* 联动：运动类习惯补打卡 */}
@@ -352,9 +376,11 @@ const ExerciseCalendarPage: React.FC = () => {
                   </View>
                 )}
 
-                {/* 添加运动（补打卡） */}
+                {/* 添加 / 修改运动（补打卡） */}
                 <View style={styles.addBox}>
-                  <Text style={styles.sheetLabel}>添加运动（补记任意一天）</Text>
+                  <Text style={styles.sheetLabel}>
+                    {editing ? `修改「${editing.type}」` : '添加运动（补记任意一天）'}
+                  </Text>
                   <View style={styles.exTypeRow}>
                     {exTypes.map((t) => (
                       <TouchableOpacity
@@ -402,10 +428,24 @@ const ExerciseCalendarPage: React.FC = () => {
                     returnKeyType="done"
                     blurOnSubmit
                   />
-                  <TouchableOpacity style={styles.addBtn} onPress={handleAdd}>
-                    <Ionicons name="add-circle-outline" size={16} color="#fff" />
-                    <Text style={styles.addBtnText}>保存到这一天</Text>
+                  <TouchableOpacity style={styles.addBtn} onPress={handleSave}>
+                    <Ionicons name={editing ? 'checkmark-circle-outline' : 'add-circle-outline'} size={16} color="#fff" />
+                    <Text style={styles.addBtnText}>{editing ? '更新这条记录' : '保存到这一天'}</Text>
                   </TouchableOpacity>
+                  {editing && (
+                    <TouchableOpacity
+                      style={styles.cancelEditBtn}
+                      onPress={() => {
+                        setEditing(null);
+                        setExType(exTypes[0] || DEFAULT_EXERCISE_TYPES[0]);
+                        setExDuration('');
+                        setExNote('');
+                        setExCustom('');
+                      }}
+                    >
+                      <Text style={styles.cancelEditText}>取消修改</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 <View style={{ height: 20 }} />
@@ -487,21 +527,15 @@ const styles = StyleSheet.create({
   cellNum: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
-  cellExWrap: {
-    width: '100%',
-    marginTop: 3,
-    gap: 2,
-    alignItems: 'center',
+  cellExDots: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 3,
+    marginTop: 4,
+    justifyContent: 'center',
   },
-  cellExBar: {
-    width: '100%',
-    borderRadius: 4,
-    paddingVertical: 1.5,
-    paddingHorizontal: 3,
-    alignItems: 'center',
-  },
-  cellExText: { fontSize: 9, color: '#fff', fontWeight: '600' },
-  cellMore: { fontSize: 9, color: COLORS.textLight },
+  cellExDot: { width: 7, height: 7, borderRadius: 3.5 },
+  cellMore: { fontSize: 10, color: COLORS.textLight, fontWeight: '700' },
 
   hint: {
     fontSize: 12,
@@ -547,10 +581,29 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0.5,
     borderBottomColor: COLORS.border,
   },
+  exItemEditing: {
+    backgroundColor: COLORS.secondary,
+    borderRadius: 10,
+    borderBottomWidth: 0,
+    paddingHorizontal: 8,
+    marginHorizontal: -8,
+  },
   exDot: { width: 10, height: 10, borderRadius: 5 },
   exBody: { flex: 1 },
   exItemName: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   exItemSub: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
+  exAction: { paddingHorizontal: 6, paddingVertical: 4 },
+  daySummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    marginBottom: 4,
+    borderRadius: 10,
+    backgroundColor: COLORS.secondary,
+    paddingHorizontal: 12,
+  },
+  daySummaryText: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
 
   checkinBox: {
     marginTop: 14,
@@ -616,6 +669,16 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   addBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  cancelEditBtn: {
+    marginTop: 8,
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+  },
+  cancelEditText: { fontSize: 14, color: COLORS.textLight, fontWeight: '600' },
 });
 
 export default ExerciseCalendarPage;

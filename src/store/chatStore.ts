@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { ChatMessage, sendChatStream } from '../utils/chat';
 import { getChatMessages, saveChatMessages, generateId } from '../utils/storage';
+import { ModelConfig } from '../utils/modelConfig';
 
 interface ChatStoreState {
   messages: ChatMessage[];
@@ -10,7 +11,7 @@ interface ChatStoreState {
   // 加载已存对话（全局只做一次，App 生命周期内消息不随页面卸载而丢）
   load: () => Promise<void>;
   // 发送一条用户消息并由 AI 在后台流式回复；结果写回 store + storage
-  send: (text: string, images: string[], systemContext?: string, search?: boolean) => Promise<void>;
+  send: (text: string, images: string[], systemContext?: string, search?: boolean, cfgOverride?: ModelConfig) => Promise<void>;
   // 直接替换消息列表（批量删除、压缩等本地操作后同步）
   setMessages: (m: ChatMessage[]) => void;
   saveMessages: (m: ChatMessage[]) => Promise<void>;
@@ -29,7 +30,7 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     set({ messages: msgs, loaded: true });
   },
 
-  send: async (text, images, systemContext, search) => {
+  send: async (text, images, systemContext, search, cfgOverride) => {
     const userMsg: ChatMessage = {
       id: generateId(),
       role: 'user',
@@ -49,6 +50,7 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
         },
         undefined,
         search,
+        cfgOverride,
       );
       const assistantMsg: ChatMessage = {
         id: generateId(),

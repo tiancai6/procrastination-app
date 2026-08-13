@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { getActiveConfig } from './modelConfig';
+import { getActiveConfig, ModelConfig } from './modelConfig';
 import { postChat, postChatStream } from './model';
 
 export interface ChatMessage {
@@ -225,11 +225,19 @@ export const sendChatStream = (
   onToken?: (delta: string) => void,
   signal?: AbortSignal,
   forceSearch = false,
+  cfgOverride?: ModelConfig,
 ): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     (async () => {
       const hasImages = messages.some((m) => m.role === 'user' && m.images && m.images.length > 0);
-      const cfg = await getActiveConfig(hasImages);
+      // 用户若手动选了模型，优先用它；但若带了图片而所选模型不支持视觉，则自动回落到视觉默认模型，
+      // 避免「文字模型读不了图」导致整条对话报错。
+      let cfg: ModelConfig | null;
+      if (cfgOverride && (!hasImages || cfgOverride.isVision)) {
+        cfg = cfgOverride;
+      } else {
+        cfg = await getActiveConfig(hasImages);
+      }
       if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
 
       type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
