@@ -443,7 +443,7 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 1000 })
+        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 1000, forceSearch: true })
         : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 1000, forceSearch: needSearch });
 
       const parsed = normalizeNutrition(parseJsonContent(content));

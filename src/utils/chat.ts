@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { getActiveConfig, ModelConfig } from './modelConfig';
-import { postChat, postChatStream } from './model';
+import { postChat, postChatStream, postChatStreamResponses } from './model';
 
 export interface ChatMessage {
   id: string;
@@ -265,6 +265,13 @@ export const sendChatStream = (
         }
       }
 
-      postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch }).then(resolve, reject);
+      // 火山（豆包）的联网搜索只在 Responses API 可用，且只在用户开了「联网搜索」开关或模型已开启搜索时走该通道；
+      // 其余品牌（GLM/Gemini）继续走 Chat Completions 的 postChatStream。
+      const useResponsesSearch = cfg.brand === 'doubao' && (forceSearch || cfg.webSearch);
+      if (useResponsesSearch) {
+        postChatStreamResponses(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch: true }).then(resolve, reject);
+      } else {
+        postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch }).then(resolve, reject);
+      }
     })().catch(reject);
   });

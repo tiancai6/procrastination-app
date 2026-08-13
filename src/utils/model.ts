@@ -18,8 +18,9 @@ const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined 
   if (!tool) return undefined;
   if (!cfg.webSearch && !forceSearch) return undefined;
   // 豆包（火山）的 web_search 工具只在 Responses API 端点（/api/v3/responses）可用；本 App 的
-  // Chat Completions 流式路径（ChatPage）走的是 /chat/completions，不认该工具 → 这里仍对豆包返回
-  // undefined（避免 400）。营养估算的联网搜索走 model.ts 的 postChatResponses（Responses 通道），见 nutrition.ts。
+  // Chat Completions 路径（postChat / postChatStream）不认该工具 → 这里仍对豆包返回 undefined（避免 400）。
+  // 联网搜索改走 model.ts 的 Responses 通道：营养估算用 postChatResponses、ChatPage 流式用 postChatStreamResponses
+  // （由 nutrition.ts / chat.ts 在「品牌=火山 且需联网」时分流）。
   if (cfg.brand === 'doubao') return undefined;
   return tool === 'google_search' ? [{ google_search: {} }] : [{ type: 'web_search' }];
 };
@@ -96,19 +97,22 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
 const toResponsesUrl = (baseUrl: string): string =>
   baseUrl.replace(/\/chat\/completions\/?$/, '/responses');
 
-// 把 ChatPayload（含 system + user/assistant 消息）转成 Responses API 的 { instructions, input }
+// 把 ChatPayload（含 system + user/assistant 消息，可能带图片）转成 Responses API 的 { instructions, input }
 const toResponsesBody = (payload: ChatPayload) => {
   let instructions: string | undefined;
   const input: any[] = [];
   for (const m of payload) {
-    const text = typeof m.content === 'string' ? m.content : m.content.map((p) => (p.type === 'text' ? p.text : '')).join('');
     if (m.role === 'system') {
+      const text = typeof m.content === 'string' ? m.content : m.content.map((p) => (p.type === 'text' ? p.text : '')).join('');
       instructions = instructions ? instructions + '\n' + text : text;
     } else {
-      input.push({
-        role: m.role,
-        content: [{ type: 'input_text', text }],
-      });
+      const content =
+        typeof m.content === 'string'
+          ? [{ type: 'input_text', text: m.content }]
+          : m.content.map((p) =>
+              p.type === 'image_url' ? { type: 'input_image', image_url: p.image_url.url } : { type: 'input_text', text: p.text },
+            );
+      input.push({ role: m.role, content });
     }
   }
   return { instructions, input };
@@ -136,7 +140,7 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     model: cfg.modelId,
     stream: false,
     input,
-    tools: [{ type: 'web_search' }],
+    tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
     temperature: opts.temperature ?? 0.7,
     max_output_tokens: opts.maxTokens ?? 1000,
   };
@@ -172,6 +176,101 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   if (!content) throw new Error('模型返回为空');
   return content;
 };
+
+// 流式版本：走 Responses API（/api/v3/responses），XHR 增量解析 SSE。
+// 火山 Responses 流式事件的文本增量在 data 行的 json.type === 'response.output_text.delta' 的 delta 字段，
+// 与 Chat Completions 的 choices[0].delta.content 不同，故单独解析。
+export const postChatStreamResponses = (
+  cfg: ModelConfig,
+  payload: ChatPayload,
+  onToken?: (delta: string) => void,
+  signal?: AbortSignal,
+  opts: CallOpts = {},
+): Promise<string> =>
+  new Promise<string>((resolve, reject) => {
+    (async () => {
+      if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
+      const url = toResponsesUrl(cfg.baseUrl);
+      const { instructions, input } = toResponsesBody(payload);
+      const body: any = {
+        model: cfg.modelId,
+        stream: true,
+        input,
+        tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
+        temperature: opts.temperature ?? 0.7,
+        max_output_tokens: opts.maxTokens ?? 2048,
+      };
+      if (instructions) body.instructions = instructions;
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('Accept', 'text/event-stream');
+      xhr.setRequestHeader('Authorization', `Bearer ${cfg.apiKey}`);
+      xhr.responseType = 'text';
+
+      let loaded = 0;
+      let buffer = '';
+      let full = '';
+
+      const onAbort = () => xhr.abort();
+      if (signal) {
+        if (signal.aborted) {
+          xhr.abort();
+          reject(new Error('已取消'));
+          return;
+        }
+        signal.addEventListener('abort', onAbort);
+      }
+
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 3 || xhr.readyState === 4) {
+          const text = xhr.responseText || '';
+          const newChunk = text.slice(loaded);
+          loaded = text.length;
+          buffer += newChunk;
+          let idx: number;
+          while ((idx = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
+            const t = line.trim();
+            if (!t.startsWith('data:')) continue;
+            const data = t.slice(5).trim();
+            if (data === '[DONE]') continue;
+            try {
+              const json = JSON.parse(data);
+              // 火山 Responses 流式：文本增量事件
+              if (json?.type === 'response.output_text.delta' && json.delta) {
+                full += json.delta;
+                onToken?.(json.delta);
+              }
+            } catch {
+              // 非 JSON 行（event 行 / 心跳）忽略
+            }
+          }
+        }
+        if (xhr.readyState === 4) {
+          if (signal) signal.removeEventListener('abort', onAbort);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if (!full) reject(new Error('模型返回为空'));
+            else resolve(full);
+          } else {
+            let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${xhr.status}）`;
+            if (xhr.status === 400) msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已开启「联网搜索」插件。';
+            else if (xhr.status === 401 || xhr.status === 403) msg += '：API Key 无效或没有权限。';
+            else if (xhr.status === 404) msg += '：接口/模型找不到，请确认接入点 ID 正确且支持 Responses API。';
+            else if (xhr.status === 429) msg += '：触发频率限制，请稍候重试。';
+            reject(new Error(msg));
+          }
+        }
+      };
+      xhr.onerror = () => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        reject(new Error('网络错误，请检查连接'));
+      };
+      xhr.send(JSON.stringify(body));
+    })().catch(reject);
+  });
 
 // 流式（XHR 增量解析 SSE；RN 的 fetch 不支持 response.body 逐块读取）
 export const postChatStream = (
