@@ -85,6 +85,37 @@ const adequacyColor: Record<string, string> = {
   过量: '#EF4444',
 };
 
+// 从食物名提取「核心食物词」，用于和三餐输入框里的文字做宽松匹配（忽略分量/单位/括号）
+const foodNameCore = (name: string): string => {
+  return name
+    .replace(/[（(][^)）]*[)）]/g, '') // 去掉括号及内容
+    .replace(/[\d.]+/g, '') // 去掉数字
+    .replace(/[gG千卡kcalKCAL碗份根片个块只杯mlML]/g, '') // 去掉量词/单位
+    .trim();
+};
+
+// 根据输入框文字，自动匹配食物库里「名字出现在文字中」的食物，返回它们的已知营养（用于估算时直接采用）
+const deriveKnownFoods = (text: string, lib: FoodItem[]): KnownFood[] => {
+  const t = text || '';
+  const out: KnownFood[] = [];
+  for (const f of lib) {
+    const core = foodNameCore(f.name);
+    if (core && t.includes(core)) {
+      out.push({
+        name: f.name,
+        foodId: f.id,
+        protein: f.protein || 0,
+        calories: f.calories || 0,
+        fat: f.fat || 0,
+        carbs: f.carbs || 0,
+        fiber: f.fiber || 0,
+        water: f.water,
+      });
+    }
+  }
+  return out;
+};
+
 interface SnackInput {
   id?: string;
   content: string;
@@ -184,29 +215,21 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     if (showFoodPicker) getFoodLibrary().then(setFoodLib);
   }, [showFoodPicker]);
 
-  const setContent = (t: MealType, v: string) => setContents((c) => ({ ...c, [t]: v }));
+  const setContent = (t: MealType, v: string) => {
+    setContents((c) => ({ ...c, [t]: v }));
+    // 输入即关联：输入框文字里出现食物库里的食物名，自动把其营养表带入估算
+    setKnownFoods((s) => ({ ...s, [t]: deriveKnownFoods(v, foodLib) }));
+  };
 
   const appendFood = (f: FoodItem) => {
     const piece = f.name;
-    // 把食物库里的准确营养记录下来，估算时作为已知数据注入，保证这条食物的热量一定准
-    const kf: KnownFood = {
-      name: f.name,
-      foodId: f.id,
-      protein: f.protein || 0,
-      calories: f.calories || 0,
-      fat: f.fat || 0,
-      carbs: f.carbs || 0,
-      fiber: f.fiber || 0,
-      water: f.water,
-    };
+    // 把名字填进输入框即可，knownFoods 会在输入变化时自动从文字匹配食物库派生（无需手动维护）
     if (foodTarget?.type === 'snack' && foodTarget.idx != null) {
       const cur = snackList[foodTarget.idx]?.content || '';
-      const curKf = snackList[foodTarget.idx]?.knownFoods || [];
-      updateSnack(foodTarget.idx, cur ? cur + '\n' + piece : piece, [...curKf, kf]);
+      updateSnack(foodTarget.idx, cur ? cur + '\n' + piece : piece);
     } else if (foodTarget?.type) {
       const cur = contents[foodTarget.type];
       setContent(foodTarget.type, cur ? cur + '\n' + piece : piece);
-      setKnownFoods((s) => ({ ...s, [foodTarget.type]: [...s[foodTarget.type], kf] }));
     }
     setShowFoodPicker(false);
   };
@@ -329,8 +352,8 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
 
   const addSnack = () =>
     setSnackList((s) => [...s, { id: `${dateStr}_snack_${Date.now()}_${s.length}`, content: '', knownFoods: [] }]);
-  const updateSnack = (idx: number, v: string, kf?: KnownFood[]) =>
-    setSnackList((s) => s.map((x, i) => (i === idx ? { ...x, content: v, knownFoods: kf ?? x.knownFoods } : x)));
+  const updateSnack = (idx: number, v: string) =>
+    setSnackList((s) => s.map((x, i) => (i === idx ? { ...x, content: v, knownFoods: deriveKnownFoods(v, foodLib) } : x)));
   const removeSnack = (idx: number) => setSnackList((s) => s.filter((_, i) => i !== idx));
 
   // 「今日已摄入 vs TDEE」进度条：吃了多少、还能吃多少
@@ -389,6 +412,12 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
           multiline
           maxLength={200}
         />
+        {knownFoods[f.key].length > 0 && (
+          <View style={styles.linkedBox}>
+            <Ionicons name="library-outline" size={13} color="#8B5CF6" />
+            <Text style={styles.linkedText}>已关联食物库：{knownFoods[f.key].map((k) => k.name).join('、')}</Text>
+          </View>
+        )}
         {entry?.nutrition && (
           <>
             <TouchableOpacity style={styles.mealResultMini} onPress={() => toggleExpand(entry.id)} activeOpacity={0.7}>
@@ -518,6 +547,12 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                         <TouchableOpacity style={styles.snackRemove} onPress={() => removeSnack(idx)}>
                           <Ionicons name="trash-outline" size={15} color={COLORS.textLight} />
                         </TouchableOpacity>
+                        {s.knownFoods && s.knownFoods.length > 0 && (
+                          <View style={[styles.linkedBox, { width: '100%' }]}>
+                            <Ionicons name="library-outline" size={13} color="#8B5CF6" />
+                            <Text style={styles.linkedText}>已关联食物库：{s.knownFoods.map((k) => k.name).join('、')}</Text>
+                          </View>
+                        )}
                         {entry?.nutrition && (
                           <View style={styles.snackResultWrap}>
                             <TouchableOpacity
@@ -901,6 +936,12 @@ const styles = StyleSheet.create({
     width: 34, height: 34, borderRadius: 10, backgroundColor: '#F5F0FF',
     borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',
   },
+  linkedBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10,
+    backgroundColor: '#F5F0FF', borderWidth: 0.5, borderColor: '#DDD0FB', alignSelf: 'flex-start',
+  },
+  linkedText: { fontSize: 11.5, color: '#8B5CF6', fontWeight: '600', flexShrink: 1 },
   snackFoodBtn: {
     width: 34, height: 34, borderRadius: 10, backgroundColor: '#F5F0FF',
     borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',

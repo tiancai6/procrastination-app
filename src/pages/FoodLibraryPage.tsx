@@ -12,14 +12,29 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import { getFoodLibrary, addFoodItem, deleteFoodItem, updateFoodItem, FoodItem } from '../utils/nutrition';
+import { getActiveConfig } from '../utils/modelConfig';
+import { postChat, parseJsonContent } from '../utils/model';
 
-const EMPTY = { name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '' };
+interface FormState {
+  name: string;
+  calories: string;
+  protein: string;
+  fat: string;
+  carbs: string;
+  fiber: string;
+  ingredientText: string; // 配料表原文
+  labelBaseUnit: string;  // 配料表基准单位
+  inputUnit: string;      // 用户习惯输入单位
+}
+const EMPTY: FormState = { name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '', ingredientText: '', labelBaseUnit: '', inputUnit: '' };
 
 const FoodLibraryPage: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -27,6 +42,7 @@ const FoodLibraryPage: React.FC = () => {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [editing, setEditing] = useState<FoodItem | null>(null);
   const [form, setForm] = useState(EMPTY);
+  const [recognizing, setRecognizing] = useState(false); // 拍照/上传配料表识别中
 
   const load = async () => setList(await getFoodLibrary());
   useEffect(() => {
@@ -47,8 +63,81 @@ const FoodLibraryPage: React.FC = () => {
       fat: String(f.fat || 0),
       carbs: String(f.carbs || 0),
       fiber: String(f.fiber || 0),
+      ingredientText: f.ingredientText || '',
+      labelBaseUnit: f.labelBaseUnit || '',
+      inputUnit: f.inputUnit || '',
     });
     setSheetVisible(true);
+  };
+
+  // 拍照 / 上传配料表 → 调用视觉模型识别 → 自动填充表单（用户可手动修改确认）
+  const pickAndRecognize = async (useCamera: boolean) => {
+    try {
+      const perm = useCamera
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert('权限不足', useCamera ? '需要相机权限才能拍照识别配料表' : '需要相册权限才能上传配料表');
+        return;
+      }
+      const res = useCamera
+        ? await ImagePicker.launchCameraAsync({ base64: true, quality: 0.6, mediaTypes: ImagePicker.MediaTypeOptions.Images })
+        : await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.6, mediaTypes: ImagePicker.MediaTypeOptions.Images });
+      if (res.canceled || !res.assets || !res.assets.length) return;
+      const asset = res.assets[0];
+      if (!asset.base64) {
+        Alert.alert('提示', '无法读取图片数据，请换一张或手动填写');
+        return;
+      }
+      const visCfg = await getActiveConfig(true);
+      if (!visCfg) {
+        Alert.alert('未配置视觉模型', '请先到「我的 → 管理 AI 模型」添加一个支持图片的模型（勾选「支持图片」），才能识别配料表');
+        return;
+      }
+      setRecognizing(true);
+      const dataUri = `data:${asset.type || 'image/jpeg'};base64,${asset.base64}`;
+      try {
+        const content = await postChat(
+          visCfg,
+          [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    '你是营养师。请识别这张食品「配料表 / 营养成分表」图片，按图片里标注的基准单位（如每100g、每份）换算成「该份食物」的营养，返回严格 JSON（不要任何额外文字）：\n' +
+                    '{"name":"食物名(含分量,如 薯片 1包100g)","calories":数字,"protein":数字,"fat":数字,"carbs":数字,"fiber":数字}',
+                },
+                { type: 'image_url', image_url: { url: dataUri } },
+              ],
+            },
+          ],
+          { temperature: 0.3, maxTokens: 800 },
+        );
+        const p: any = parseJsonContent(content);
+        setForm((f) => ({
+          ...f,
+          name: p?.name ? String(p.name) : f.name,
+          calories: p?.calories != null ? String(Number(p.calories) || 0) : f.calories,
+          protein: p?.protein != null ? String(Number(p.protein) || 0) : f.protein,
+          fat: p?.fat != null ? String(Number(p.fat) || 0) : f.fat,
+          carbs: p?.carbs != null ? String(Number(p.carbs) || 0) : f.carbs,
+          fiber: p?.fiber != null ? String(Number(p.fiber) || 0) : f.fiber,
+          // 把识别依据（配料表原文）也记下来，方便日后核对；基准单位留空让用户确认
+          ingredientText: f.ingredientText || `（来自配料表识别：${p?.name || ''}）`,
+        }));
+        Alert.alert('识别完成', '已自动填入营养数据，请核对修改后再保存');
+      } catch (e: any) {
+        console.error('[FoodLibrary] recognize failed', e);
+        Alert.alert('识别失败', e?.message ? String(e.message).slice(0, 200) : '请检查网络或视觉模型后重试，也可手动填写');
+      } finally {
+        setRecognizing(false);
+      }
+    } catch (e: any) {
+      setRecognizing(false);
+      Alert.alert('出错', e?.message ? String(e.message).slice(0, 200) : '无法打开相机/相册');
+    }
   };
 
   const handleSave = async () => {
@@ -63,6 +152,9 @@ const FoodLibraryPage: React.FC = () => {
       fat: Number(form.fat) || 0,
       carbs: Number(form.carbs) || 0,
       fiber: Number(form.fiber) || 0,
+      ingredientText: form.ingredientText.trim() || undefined,
+      labelBaseUnit: form.labelBaseUnit.trim() || undefined,
+      inputUnit: form.inputUnit.trim() || undefined,
     };
     if (editing) {
       setList(await updateFoodItem(editing.id, payload));
@@ -145,6 +237,18 @@ const FoodLibraryPage: React.FC = () => {
                 </TouchableOpacity>
               </View>
 
+              <View style={styles.recogRow}>
+                <TouchableOpacity style={styles.recogBtn} onPress={() => pickAndRecognize(true)} disabled={recognizing}>
+                  {recognizing ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="camera-outline" size={15} color="#fff" />}
+                  <Text style={styles.recogBtnText}>拍照配料表</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.recogBtnAlt} onPress={() => pickAndRecognize(false)} disabled={recognizing}>
+                  <Ionicons name="image-outline" size={15} color={COLORS.primary} />
+                  <Text style={styles.recogBtnAltText}>上传配料表</Text>
+                </TouchableOpacity>
+              </View>
+              {recognizing && <Text style={styles.recogHint}>正在识别配料表，请稍候…</Text>}
+
               <Text style={styles.label}>名称（含分量）</Text>
               <TextInput
                 style={styles.input}
@@ -162,6 +266,42 @@ const FoodLibraryPage: React.FC = () => {
                 <Field label="脂肪(g)" value={form.fat} onChange={(v) => setForm({ ...form, fat: v })} />
                 <Field label="碳水(g)" value={form.carbs} onChange={(v) => setForm({ ...form, carbs: v })} />
                 <Field label="纤维(g)" value={form.fiber} onChange={(v) => setForm({ ...form, fiber: v })} />
+              </View>
+
+              <Text style={styles.label}>配料表原文（可粘贴识别结果，便于日后核对换算）</Text>
+              <TextInput
+                style={[styles.input, { minHeight: 56, textAlignVertical: 'top' }]}
+                placeholder="如：每100g 能量512kcal 蛋白质7.2g 脂肪31g 碳水53g 膳食纤维4g"
+                placeholderTextColor={COLORS.textLighter}
+                value={form.ingredientText}
+                onChangeText={(v) => setForm({ ...form, ingredientText: v })}
+                multiline
+                returnKeyType="done"
+              />
+
+              <View style={styles.unitRow}>
+                <View style={styles.unitItem}>
+                  <Text style={styles.label}>配料表基准单位</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="如 100g / 1份20g"
+                    placeholderTextColor={COLORS.textLighter}
+                    value={form.labelBaseUnit}
+                    onChangeText={(v) => setForm({ ...form, labelBaseUnit: v })}
+                    returnKeyType="done"
+                  />
+                </View>
+                <View style={styles.unitItem}>
+                  <Text style={styles.label}>我习惯输入单位</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="如 一份 / 10g"
+                    placeholderTextColor={COLORS.textLighter}
+                    value={form.inputUnit}
+                    onChangeText={(v) => setForm({ ...form, inputUnit: v })}
+                    returnKeyType="done"
+                  />
+                </View>
               </View>
 
               <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
@@ -251,6 +391,20 @@ const styles = StyleSheet.create({
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
   sheetTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   label: { fontSize: 13, color: COLORS.textLight, marginTop: 10, marginBottom: 6 },
+  recogRow: { flexDirection: 'row', gap: 10, marginTop: 2, marginBottom: 4 },
+  recogBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 11, borderRadius: 12, backgroundColor: COLORS.primary,
+  },
+  recogBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  recogBtnAlt: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 11, borderRadius: 12, backgroundColor: '#EEF2FF', borderWidth: 0.5, borderColor: '#C7D2FE',
+  },
+  recogBtnAltText: { color: COLORS.primary, fontSize: 14, fontWeight: '600' },
+  recogHint: { fontSize: 12, color: COLORS.primary, marginTop: 6, marginBottom: 2 },
+  unitRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  unitItem: { flex: 1 },
   input: {
     backgroundColor: COLORS.background,
     borderRadius: 12,

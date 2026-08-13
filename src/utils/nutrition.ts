@@ -331,7 +331,7 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
             `- ${k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
         )
         .join('\n') +
-      '\n若文字里还提到上面没列出的其它食物，请自行估算；上面已列出的食物请严格采用给出的数值，不要改写。'
+      '\n上面已列出的食物请严格采用给出的数值，不要改写；若文字里还提到上面没列出的其它食物（没有营养表），请联网搜索其常见热量后再估算。'
     : '';
 
   const MAX_RETRIES = 4;
@@ -346,7 +346,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
             content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
           },
         ],
-        { temperature: 0.5, maxTokens: 1000 },
+        // 混合餐（既有食物库已知营养、又有没营养表的食物）：强制联网，让 AI 去搜未知食物的热量
+        { temperature: 0.5, maxTokens: 1000, forceSearch: !!known },
       );
 
       const parsed = normalizeNutrition(parseJsonContent(content));
@@ -470,6 +471,10 @@ export interface FoodItem {
   carbs: number;
   fiber: number;
   water?: number;
+  // 配料表与单位（用户录入时填写，帮助 AI 更准确换算热量）
+  ingredientText?: string; // 配料表原文（或拍照识别结果）
+  labelBaseUnit?: string;  // 配料表基准单位，如 "100g" / "1份20g"
+  inputUnit?: string;      // 用户习惯输入单位，如 "一份" / "10g"
 }
 
 const FOOD_LIBRARY_KEY = 'food_library';
