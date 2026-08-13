@@ -19,8 +19,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
-import { getFoodLibrary, addFoodItem, deleteFoodItem, updateFoodItem, FoodItem } from '../utils/nutrition';
-import { getActiveConfig } from '../utils/modelConfig';
+import { getFoodLibrary, addFoodItem, deleteFoodItem, updateFoodItem, FoodItem, parseBaseGrams } from '../utils/nutrition';
+import { getActiveConfig, BRAND_PRESETS } from '../utils/modelConfig';
 import { postChat, parseJsonContent } from '../utils/model';
 
 interface FormState {
@@ -94,6 +94,14 @@ const FoodLibraryPage: React.FC = () => {
         Alert.alert('未配置视觉模型', '请先到「我的 → 管理 AI 模型」添加一个支持图片的模型（勾选「支持图片」），才能识别配料表');
         return;
       }
+      // 只有 GLM（glm-4v-*）/ Gemini 真正支持图片识别；豆包/DeepSeek 不支持，提前拦截避免白跑
+      if (visCfg.brand !== 'glm' && visCfg.brand !== 'gemini') {
+        Alert.alert(
+          '当前视觉模型可能不支持看图',
+          `识别配料表需要支持图片的模型（GLM 的 glm-4v-* 或 Gemini）。当前模型品牌「${BRAND_PRESETS[visCfg.brand].label}」可能不支持图片识别，请到「管理 AI 模型」改用 GLM/Gemini 的视觉模型。`,
+        );
+        return;
+      }
       setRecognizing(true);
       const dataUri = `data:${asset.type || 'image/jpeg'};base64,${asset.base64}`;
       try {
@@ -107,7 +115,7 @@ const FoodLibraryPage: React.FC = () => {
                   type: 'text',
                   text:
                     '你是营养师。请识别这张食品「配料表 / 营养成分表」图片，按图片里标注的基准单位（如每100g、每份）换算成「该份食物」的营养，返回严格 JSON（不要任何额外文字）：\n' +
-                    '{"name":"食物名(含分量,如 薯片 1包100g)","calories":数字,"protein":数字,"fat":数字,"carbs":数字,"fiber":数字}',
+                    '{"name":"食物名(含分量,如 薯片 1包100g)","calories":数字,"protein":数字,"fat":数字,"carbs":数字,"fiber":数字,"baseUnit":"基准单位文字,如 100g 或 1份20g,按图片营养成分表标注的基准单位填写"}',
                 },
                 { type: 'image_url', image_url: { url: dataUri } },
               ],
@@ -124,8 +132,9 @@ const FoodLibraryPage: React.FC = () => {
           fat: p?.fat != null ? String(Number(p.fat) || 0) : f.fat,
           carbs: p?.carbs != null ? String(Number(p.carbs) || 0) : f.carbs,
           fiber: p?.fiber != null ? String(Number(p.fiber) || 0) : f.fiber,
-          // 把识别依据（配料表原文）也记下来，方便日后核对；基准单位留空让用户确认
+          // 把识别依据（配料表原文）也记下来，方便日后核对；并回填基准单位（供后续分量换算）
           ingredientText: f.ingredientText || `（来自配料表识别：${p?.name || ''}）`,
+          labelBaseUnit: p?.baseUnit ? String(p.baseUnit) : f.labelBaseUnit,
         }));
         Alert.alert('识别完成', '已自动填入营养数据，请核对修改后再保存');
       } catch (e: any) {
@@ -155,6 +164,8 @@ const FoodLibraryPage: React.FC = () => {
       ingredientText: form.ingredientText.trim() || undefined,
       labelBaseUnit: form.labelBaseUnit.trim() || undefined,
       inputUnit: form.inputUnit.trim() || undefined,
+      // 由基准单位（或名称）解析出的这份克数，供三餐估算时按实际份量换算
+      baseGrams: parseBaseGrams(form.labelBaseUnit) || parseBaseGrams(form.name) || undefined,
     };
     if (editing) {
       setList(await updateFoodItem(editing.id, payload));

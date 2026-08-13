@@ -30,6 +30,8 @@ import {
   addFoodItem,
   deleteFoodItem,
   FoodItem,
+  foodNameCore,
+  parseBaseGrams,
 } from '../utils/nutrition';
 import { getApiKey, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
@@ -85,22 +87,14 @@ const adequacyColor: Record<string, string> = {
   过量: '#EF4444',
 };
 
-// 从食物名提取「核心食物词」，用于和三餐输入框里的文字做宽松匹配（忽略分量/单位/括号）
-const foodNameCore = (name: string): string => {
-  return name
-    .replace(/[（(][^)）]*[)）]/g, '') // 去掉括号及内容
-    .replace(/[\d.]+/g, '') // 去掉数字
-    .replace(/[gG千卡kcalKCAL碗份根片个块只杯mlML]/g, '') // 去掉量词/单位
-    .trim();
-};
-
-// 根据输入框文字，自动匹配食物库里「名字出现在文字中」的食物，返回它们的已知营养（用于估算时直接采用）
+// 根据输入框文字，自动匹配食物库里「名字出现在文字中」的食物，返回它们的已知营养（用于估算时直接采用）。
+// 核心词太短（如「奶」「果」）易误关联，要求核心词至少 2 字；并带入基准克数/习惯单位克数供分量换算。
 const deriveKnownFoods = (text: string, lib: FoodItem[]): KnownFood[] => {
   const t = text || '';
   const out: KnownFood[] = [];
   for (const f of lib) {
     const core = foodNameCore(f.name);
-    if (core && t.includes(core)) {
+    if (core && core.length >= 2 && t.includes(core)) {
       out.push({
         name: f.name,
         foodId: f.id,
@@ -110,6 +104,8 @@ const deriveKnownFoods = (text: string, lib: FoodItem[]): KnownFood[] => {
         carbs: f.carbs || 0,
         fiber: f.fiber || 0,
         water: f.water,
+        baseGrams: f.baseGrams,
+        inputUnitGrams: f.inputUnit ? parseBaseGrams(f.inputUnit) : undefined,
       });
     }
   }
@@ -234,12 +230,17 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setShowFoodPicker(false);
   };
 
-  const saveItemsToFood = async (items: MealNutritionItem[]) => {
+  const saveItemsToFood = async (items: MealNutritionItem[], knownToSkip?: KnownFood[]) => {
+    // 已知食物（来自食物库）不重复入库，避免库膨胀与重复记录
+    const skipCores = new Set((knownToSkip || []).map((k) => foodNameCore(k.name)));
+    let saved = 0;
     for (const it of items) {
+      if (skipCores.has(foodNameCore(it.name))) continue;
       await addFoodItem({ name: it.name, protein: it.protein || 0, calories: it.calories || 0, fat: it.fat || 0, carbs: it.carbs || 0, fiber: it.fiber || 0 });
+      saved += 1;
     }
     setFoodLib(await getFoodLibrary());
-    Alert.alert('已存入食物库', `已保存 ${items.length} 样食物，下次记录可直接从食物库选择`);
+    Alert.alert('已存入食物库', saved > 0 ? `已保存 ${saved} 样新食物，下次记录可直接从食物库选择` : '这些食物都已在食物库里了，无需重复保存');
   };
 
   const doSave = async () => {
@@ -277,7 +278,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstimatingMealId(id);
     setEstMsg('');
     const ctx = await buildMealContext(dateStr);
-    const { result, status } = await estimateMealNutrition({ ...entry, id }, ctx, selCfg);
+    const { result, status, searched, needSearch, message } = await estimateMealNutrition({ ...entry, id }, ctx, selCfg);
     if (status === 'ok' && result) {
       const next = await saveMealNutrition(id, result);
       setEntries(next.filter((m) => m.date === dateStr));
@@ -285,12 +286,19 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       setExpanded((e) => ({ ...e, [id]: true }));
       // 估算成功即已落库，主动通知首页/统计中心刷新（不依赖用户再点「保存」）
       onSaved?.();
+      // 若这顿含陌生食物，但当前模型（如豆包）不支持联网搜索，给出明确提示
+      if (needSearch && !searched) {
+        setEstMsg('提示：当前模型（' + (selCfg?.name || '默认') + '）不支持联网搜索，陌生食物按模型自身知识估算，可能不够准');
+      } else {
+        setEstMsg('');
+      }
     } else if (status === 'nokey') {
       setEstMsg('未设置 API Key，请先到「我的」页面填写');
     } else if (status === 'rate') {
       setEstMsg('AI 接口限流了，请稍候几秒再点估算');
     } else {
-      setEstMsg('估算失败，请检查网络或 API Key 后重试');
+      // 透传具体错误（404=模型标识填错、401=API Key 无效等），不再笼统提示
+      setEstMsg('估算失败：' + (message ? String(message).slice(0, 200) : '请检查网络或 API Key 后重试'));
     }
     setEstimatingMealId(null);
   };
@@ -575,7 +583,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                                 />
                               </View>
                             </TouchableOpacity>
-                            <TouchableOpacity style={styles.saveFoodBtn} onPress={() => saveItemsToFood(entry.nutrition?.items || [])}>
+                            <TouchableOpacity style={styles.saveFoodBtn} onPress={() => saveItemsToFood(entry.nutrition?.items || [], entry.knownFoods)}>
                               <Ionicons name="bookmark-outline" size={13} color="#8B5CF6" />
                               <Text style={styles.saveFoodBtnText}>存为食物</Text>
                             </TouchableOpacity>

@@ -7,6 +7,80 @@ import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy, Kn
 
 const MEALS_KEY = 'meal_entries';
 
+// ============ 食物名核心词 / 分量换算（已知食物按实际吃的份量缩放营养）============
+
+// 从食物名提取「核心食物词」，去掉括号/数字/量词，用于与三餐输入框文字做宽松匹配。
+// 同时供 MealQuickSheet 复用（避免两份不一致的实现）。
+export const foodNameCore = (name: string): string => {
+  return (name || '')
+    .replace(/[（(][^)）]*[)）]/g, '') // 去掉括号及内容
+    .replace(/[\d.]+/g, '') // 去掉数字
+    .replace(/[gG千卡kcalKCAL碗份根片个块只杯mlML]/g, '') // 去掉量词/单位
+    .trim();
+};
+
+// 中文数字 → 阿拉伯（半=0.5，一/两/二=1/2，十/十五等常见）
+const CN_NUM: Record<string, number> = { 半: 0.5, 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+const cnNumToNumber = (s: string): number | null => {
+  if (!s) return null;
+  const m = s.match(/^(\d+(\.\d+)?)$/);
+  if (m) return parseFloat(m[1]);
+  if (CN_NUM[s] != null) return CN_NUM[s];
+  const ten = s.match(/^十(\d)$/);
+  if (ten) return 10 + parseInt(ten[1], 10);
+  const tenPre = s.match(/^(\d)十$/);
+  if (tenPre) return parseInt(tenPre[1], 10) * 10;
+  return null;
+};
+
+// 从「基准单位/名称」文字里解析这份食物对应的克数（如 "100g"→100，"1份20g"→20，"米饭 1碗(约150g)"→150）
+export const parseBaseGrams = (text?: string): number | undefined => {
+  if (!text) return undefined;
+  const m = text.match(/(\d+(\.\d+)?)\s*(g|克|毫升|ml|ML)/);
+  if (m) return parseFloat(m[1]);
+  return undefined;
+};
+
+// 解析用户在三餐里为某已知食物实际吃的克数；解析不出返回 null（则不换算，按一份计）
+const parseActualGrams = (content: string, core: string, baseGrams?: number, inputUnitGrams?: number): number | null => {
+  if (!content) return null;
+  const idx = content.indexOf(core);
+  const win = idx >= 0 ? content.slice(Math.max(0, idx - 8), Math.min(content.length, idx + core.length + 8)) : content;
+  // 1) 直接克数
+  const g = win.match(/(\d+(\.\d+)?)\s*(g|克|毫升|ml|ML)/);
+  if (g) return parseFloat(g[1]);
+  // 2) 数字 + 量词（碗/份/个…）。「份」优先用习惯单位克数；否则用基准克数（假设基准即 1 份/1 碗）
+  const qty = win.match(/(半|一|两|二|三|四|五|六|七|八|九|十|\d+(\.\d+)?)\s*(碗|份|个|片|根|块|只|杯|包)/);
+  if (qty) {
+    const n = cnNumToNumber(qty[1]);
+    if (n == null) return null;
+    if (qty[2] === '份' && inputUnitGrams != null) return n * inputUnitGrams;
+    if (baseGrams != null) return n * baseGrams;
+    return null;
+  }
+  return null;
+};
+
+// 把一条已知食物的营养按用户实际吃的份量缩放（找不到实际份量则按一份，不变）
+const scaleKnown = (k: KnownFood, content: string): KnownFood => {
+  const core = foodNameCore(k.name);
+  const actual = parseActualGrams(content, core, k.baseGrams, k.inputUnitGrams);
+  let ratio = 1;
+  if (actual != null && k.baseGrams && k.baseGrams > 0) ratio = actual / k.baseGrams;
+  else if (actual != null && k.inputUnitGrams && k.inputUnitGrams > 0) ratio = actual / k.inputUnitGrams;
+  if (ratio === 1) return k;
+  const r1 = (v: number) => Math.round(v * ratio * 10) / 10;
+  return {
+    ...k,
+    protein: r1(k.protein),
+    calories: Math.round(k.calories * ratio),
+    fat: r1(k.fat),
+    carbs: r1(k.carbs),
+    fiber: r1(k.fiber),
+    water: k.water != null ? Math.round(k.water * ratio) : undefined,
+  };
+};
+
 // 当日身体/运动上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
 export interface MealContext {
   bmr: number;
@@ -247,6 +321,9 @@ const NUTRITION_SYSTEM_PROMPT = `你是一位营养师。用户会告诉你某�
 export interface EstimateResult {
   result: MealNutrition | null;
   status: 'ok' | 'nokey' | 'error' | 'rate';
+  searched?: boolean;   // 本轮是否实际发起了联网搜索（豆包因不支持搜索会为 false）
+  needSearch?: boolean; // 这顿是否本应联网（含未知食物）
+  message?: string;     // 失败时的具体错误信息（用于透传展示）
 }
 
 const normalizeNutrition = (raw: any): MealNutrition => {
@@ -292,7 +369,9 @@ const normalizeNutrition = (raw: any): MealNutrition => {
 const applyKnownFoods = (n: MealNutrition, known: KnownFood[] | null | undefined): void => {
   if (!known || known.length === 0) return;
   for (const k of known) {
-    let it = n.items.find((i) => i.name.includes(k.name) || k.name.includes(i.name));
+    // 用核心词精确匹配（而非名字互相包含），避免「牛奶燕麦粥」被误当成「牛奶」覆盖成整份值
+    const kc = foodNameCore(k.name);
+    let it = n.items.find((i) => foodNameCore(i.name) === kc);
     if (!it) {
       it = { name: k.name, protein: 0, calories: 0, fat: 0, carbs: 0, fiber: 0 };
       n.items.push(it);
@@ -321,14 +400,30 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
 
-  // 已知营养（来自食物库）：作为 ground truth 注入 prompt，让 AI 直接用这些数值、不再重新猜。
-  const known = entry.knownFoods && entry.knownFoods.length ? entry.knownFoods : null;
+  // 已知营养（来自食物库）：先按用户实际吃的份量缩放，再作为 ground truth 注入 prompt，
+  // 保证「半碗米饭」也按半碗的热量算，而不是整份。
+  const rawKnown = entry.knownFoods && entry.knownFoods.length ? entry.knownFoods : null;
+  const known = rawKnown ? rawKnown.map((k) => scaleKnown(k, entry.content)) : null;
+
+  // 是否需要联网搜索：仅当这顿里含有「食物库没有覆盖的食物」才联网。
+  // 纯已知食物（文字去掉已知食物名后已无实质内容）→ 不联网；纯未知 / 混合 → 联网。
+  let needSearch = true;
+  if (known && known.length) {
+    let remaining = entry.content;
+    known.forEach((k) => {
+      const c = foodNameCore(k.name);
+      if (c) remaining = remaining.split(c).join('');
+    });
+    const left = remaining.replace(/[（()）\d.gG千卡kcal碗份根片个块只杯mlML，,、。.\s]/g, '').trim();
+    needSearch = left.length > 0;
+  }
+
   const knownText = known
-    ? '\n【以下食物的营养数据来自你的个人食物库（已准确记录），请直接使用这些数值，不要再估算；把它们计入各项总和即可】\n' +
+    ? '\n【以下食物的营养数据来自你的个人食物库（已准确记录，并已按你实际吃的份量换算好），请直接使用这些数值，不要再估算；把它们计入各项总和即可】\n' +
       known
         .map(
           (k) =>
-            `- ${k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
+            `- ${foodNameCore(k.name) || k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
         )
         .join('\n') +
       '\n上面已列出的食物请严格采用给出的数值，不要改写；若文字里还提到上面没列出的其它食物（没有营养表），请联网搜索其常见热量后再估算。'
@@ -346,14 +441,16 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
             content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
           },
         ],
-        // 混合餐（既有食物库已知营养、又有没营养表的食物）：强制联网，让 AI 去搜未知食物的热量
-        { temperature: 0.5, maxTokens: 1000, forceSearch: !!known },
+        // 仅当这顿含「食物库没有的陌生食物」才联网搜索；纯已知食物不联网（豆包不支持搜索会静默失效，见 searched）
+        { temperature: 0.5, maxTokens: 1000, forceSearch: needSearch },
       );
 
       const parsed = normalizeNutrition(parseJsonContent(content));
-      // 用食物库的准确数值覆盖 AI 对已知食物的估算，保证「已记录食物」的热量一定准确
+      // 用食物库的准确数值（已换算）覆盖 AI 对已知食物的估算，保证「已记录食物」的热量一定准确
       applyKnownFoods(parsed, known);
-      return { result: parsed, status: 'ok' };
+      // 实际是否联网：豆包在 model.ts 已自动禁用搜索工具，故 forceSearch 对它无效
+      const searched = needSearch && cfg.brand !== 'doubao';
+      return { result: parsed, status: 'ok', searched, needSearch };
     } catch (e: any) {
       const isRate = e?.message && String(e.message).includes('429');
       // 仅 429 限流才退避重试；其它错误（401/JSON 解析失败/网络）直接失败，避免无意义重试 4 次
@@ -363,10 +460,10 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
         continue;
       }
       console.error('[Nutrition] GLM call failed', e);
-      return { result: null, status: isRate ? 'rate' : 'error' };
+      return { result: null, status: isRate ? 'rate' : 'error', message: e?.message, searched: false, needSearch };
     }
   }
-  return { result: null, status: 'error' };
+  return { result: null, status: 'error', searched: false, needSearch };
 };
 
 // 并发估算多餐。免费 GLM 接口有频率上限，并发太高会触发 429 限流，
@@ -475,6 +572,8 @@ export interface FoodItem {
   ingredientText?: string; // 配料表原文（或拍照识别结果）
   labelBaseUnit?: string;  // 配料表基准单位，如 "100g" / "1份20g"
   inputUnit?: string;      // 用户习惯输入单位，如 "一份" / "10g"
+  // 由 labelBaseUnit / 名称自动解析出的「这份食物对应的克数」，用于分量换算
+  baseGrams?: number;
 }
 
 const FOOD_LIBRARY_KEY = 'food_library';

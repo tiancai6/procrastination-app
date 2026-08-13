@@ -214,6 +214,11 @@ export interface KnownFood {
   carbs: number;      // 碳水 g
   fiber: number;      // 膳食纤维 g
   water?: number;     // 饮水 ml（可选）
+  // 分量换算用：食物库这一份对应的「克数」（如「米饭 1碗(约150g)」→150）。
+  // 用户实际吃的分量与这份不同时，按比例缩放营养，避免「半碗也按一整碗热量记」。
+  baseGrams?: number;
+  // 用户习惯输入单位每份对应的克数（如 inputUnit「一份(20g)」→20）。用于「N份」换算。
+  inputUnitGrams?: number;
 }
 
 export type MealAdequacy = '不足' | '适量' | '过量';
