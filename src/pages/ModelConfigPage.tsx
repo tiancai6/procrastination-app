@@ -82,6 +82,14 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
       Alert.alert('请填写完整', 'API Key 与模型标识都不能为空');
       return;
     }
+    // 火山方舟的模型标识必须是「推理接入点 ID」（ep-xxxx），不能直接填模型名，否则会 404 失败
+    if (editing.brand === 'doubao' && !editing.modelId.trim().startsWith('ep-')) {
+      Alert.alert(
+        '模型标识有误',
+        '火山方舟的「模型标识」必须填你创建的推理接入点 ID（以 ep- 开头，形如 ep-xxxx），不能直接填模型名（如 doubao-seed-2.0-lite）。\n\n请到火山方舟控制台创建接入点后，复制其 ID 再填到这里。',
+      );
+      return;
+    }
     const payload = {
       brand: editing.brand,
       name: editing.name.trim() || editing.modelId.trim(),

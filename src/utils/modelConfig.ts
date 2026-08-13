@@ -41,9 +41,11 @@ export const BRAND_PRESETS: Record<ModelBrand, BrandPreset> = {
   doubao: {
     label: '豆包 / 火山方舟',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
-    models: ['doubao-seed-2.0-lite', 'doubao-seed-2.0-pro', 'doubao-seed-2.0-mini'],
+    // ⚠️ 火山方舟的「模型标识」必须填你创建的「推理接入点 ID」（形如 ep-xxxx），
+    // 不是模型名（doubao-seed-2.0-lite 等无法直接调用，会 404）。下面作为占位提示。
+    models: ['（填你的接入点ID，形如 ep-xxxx）'],
     searchTool: 'web_search',
-    notes: '需先在火山方舟「组件管理」开启联网内容插件，联网搜索每月免费 2 万次',
+    notes: '火山方舟需先在控制台创建「推理接入点」，模型标识填该接入点 ID（ep-xxxx），不能直接填模型名。API Key 在「API 密钥」页获取。联网搜索当前不支持（会 400，已自动关闭）。',
   },
   deepseek: {
     label: 'DeepSeek',

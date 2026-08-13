@@ -3,7 +3,7 @@ import { getActiveConfig } from './modelConfig';
 import { postChat, parseJsonContent } from './model';
 import { ModelConfig } from './modelConfig';
 import { autoBackup } from './autoBackup';
-import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy } from '../types';
+import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy, KnownFood } from '../types';
 
 const MEALS_KEY = 'meal_entries';
 
@@ -84,11 +84,13 @@ const saveMeals = async (list: MealEntry[]): Promise<void> => {
 // 写入一条餐记录。加餐(snack)可多条：传 id 表示更新/删除该条，不传则新增。
 // content 为空：早午晚=删除该餐；snack 且传 id=删除该条，未传 id=忽略。
 // 注意：更新时必须保留已有的 nutrition（AI 估算结果），否则「保存」会把刚估算的营养覆盖掉。
+// knownFoods 为从食物库选入的已知营养；不传则保留已有值（避免手动改文本时把已知营养清掉）。
 export const upsertMeal = async (
   type: MealType,
   date: string,
   content: string,
   id?: string,
+  knownFoods?: KnownFood[],
 ): Promise<MealEntry[]> => {
   const list = await getMeals();
   const text = content.trim();
@@ -99,14 +101,30 @@ export const upsertMeal = async (
     }
     const existing = id ? list.find((m) => m.id === id) : undefined;
     const rest = id ? list.filter((m) => m.id !== id) : list;
-    rest.push({ id: id || `${date}_snack_${Date.now()}`, type, content: text, date, createdAt: Date.now(), nutrition: existing?.nutrition });
+    rest.push({
+      id: id || `${date}_snack_${Date.now()}`,
+      type,
+      content: text,
+      date,
+      createdAt: Date.now(),
+      nutrition: existing?.nutrition,
+      knownFoods: knownFoods ?? existing?.knownFoods,
+    });
     await saveMeals(rest);
     return rest;
   }
   const existing = list.find((m) => m.type === type && m.date === date);
   const rest = list.filter((m) => !(m.type === type && m.date === date));
   if (text) {
-    rest.push({ id: `${date}_${type}`, type, content: text, date, createdAt: Date.now(), nutrition: existing?.nutrition });
+    rest.push({
+      id: `${date}_${type}`,
+      type,
+      content: text,
+      date,
+      createdAt: Date.now(),
+      nutrition: existing?.nutrition,
+      knownFoods: knownFoods ?? existing?.knownFoods,
+    });
   }
   await saveMeals(rest);
   return rest;
@@ -140,6 +158,7 @@ export const updateMealEntry = async (entry: MealEntry): Promise<MealEntry[]> =>
   rest.push({
     ...entry,
     nutrition: entry.nutrition ?? old?.nutrition,
+    knownFoods: entry.knownFoods ?? old?.knownFoods,
   });
   await saveMeals(rest);
   return rest;
@@ -267,6 +286,30 @@ const normalizeNutrition = (raw: any): MealNutrition => {
   };
 };
 
+// 用「食物库已知的准确营养」覆盖 AI 对已知食物的估算结果，保证用户记录过的食物热量一定准确。
+// 做法：对每条 knownFood，在 AI 返回的 items 里按名称匹配；匹配到就写入准确值，没匹配到就补一条。
+// 最后按 items 重算顶层合计，确保「逐项明细」与「总合计」永远一致、且已知食物用的是你存的真实数值。
+const applyKnownFoods = (n: MealNutrition, known: KnownFood[] | null | undefined): void => {
+  if (!known || known.length === 0) return;
+  for (const k of known) {
+    let it = n.items.find((i) => i.name.includes(k.name) || k.name.includes(i.name));
+    if (!it) {
+      it = { name: k.name, protein: 0, calories: 0, fat: 0, carbs: 0, fiber: 0 };
+      n.items.push(it);
+    }
+    it.protein = k.protein;
+    it.calories = k.calories;
+    it.fat = k.fat;
+    it.carbs = k.carbs;
+    it.fiber = k.fiber;
+  }
+  n.protein = n.items.reduce((s, i) => s + (i.protein || 0), 0);
+  n.calories = n.items.reduce((s, i) => s + (i.calories || 0), 0);
+  n.fat = n.items.reduce((s, i) => s + (i.fat || 0), 0);
+  n.carbs = n.items.reduce((s, i) => s + (i.carbs || 0), 0);
+  n.fiber = n.items.reduce((s, i) => s + (i.fiber || 0), 0);
+};
+
 // 估算单餐营养（返回该餐的明细 + 合计）
 // 限流自动重试：免费 GLM 接口有频率上限（如每分钟若干次）。
 // 一顿饭一个请求，批量估算时并发打过去很容易返回 429，这里遇到 429 就退避重试，
@@ -278,6 +321,19 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   if (!cfg) return { result: null, status: 'nokey' };
   if (!entry.content || !entry.content.trim()) return { result: null, status: 'nokey' };
 
+  // 已知营养（来自食物库）：作为 ground truth 注入 prompt，让 AI 直接用这些数值、不再重新猜。
+  const known = entry.knownFoods && entry.knownFoods.length ? entry.knownFoods : null;
+  const knownText = known
+    ? '\n【以下食物的营养数据来自你的个人食物库（已准确记录），请直接使用这些数值，不要再估算；把它们计入各项总和即可】\n' +
+      known
+        .map(
+          (k) =>
+            `- ${k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
+        )
+        .join('\n') +
+      '\n若文字里还提到上面没列出的其它食物，请自行估算；上面已列出的食物请严格采用给出的数值，不要改写。'
+    : '';
+
   const MAX_RETRIES = 4;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -287,13 +343,15 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
           { role: 'system', content: NUTRITION_SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}\n请输出这顿的营养估算 JSON。`,
+            content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
           },
         ],
         { temperature: 0.5, maxTokens: 1000 },
       );
 
       const parsed = normalizeNutrition(parseJsonContent(content));
+      // 用食物库的准确数值覆盖 AI 对已知食物的估算，保证「已记录食物」的热量一定准确
+      applyKnownFoods(parsed, known);
       return { result: parsed, status: 'ok' };
     } catch (e: any) {
       const isRate = e?.message && String(e.message).includes('429');

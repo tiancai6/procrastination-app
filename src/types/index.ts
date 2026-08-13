@@ -199,6 +199,21 @@ export interface MealEntry {
   date: string;                // 日期 YYYY-MM-DD
   createdAt: number;
   nutrition?: MealNutrition;   // 本餐营养估算（含逐项明细）
+  // 从「食物库」选入、营养已知的食物（用户已准确记录），估算时作为 ground truth 注入，
+  // 保证你记录过的食物热量一定准确，不被 AI 重新瞎猜。
+  knownFoods?: KnownFood[];
+}
+
+// 从食物库选入时带入的「已知营养」（来源即 FoodItem 的保存值，仅作展示/参考→现改为参与估算）
+export interface KnownFood {
+  name: string;       // 食物名（含分量），与食物库里一致
+  foodId?: string;    // 关联的食物库 id（可选，便于后续同步）
+  protein: number;    // 蛋白 g
+  calories: number;   // 热量 kcal
+  fat: number;        // 脂肪 g
+  carbs: number;      // 碳水 g
+  fiber: number;      // 膳食纤维 g
+  water?: number;     // 饮水 ml（可选）
 }
 
 export type MealAdequacy = '不足' | '适量' | '过量';

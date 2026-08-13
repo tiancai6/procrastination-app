@@ -17,7 +17,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
-import { MealType, MealEntry, MealNutritionItem } from '../types';
+import { MealType, MealEntry, MealNutritionItem, KnownFood } from '../types';
 import {
   getMealsByDate,
   upsertMeal,
@@ -88,6 +88,7 @@ const adequacyColor: Record<string, string> = {
 interface SnackInput {
   id?: string;
   content: string;
+  knownFoods?: KnownFood[]; // 该加餐从食物库选入、营养已知的食物
 }
 
 const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) => {
@@ -96,6 +97,13 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   const [energySummary, setEnergySummary] = useState('');
   const [contents, setContents] = useState<Record<MealType, string>>({ breakfast: '', lunch: '', dinner: '', snack: '' });
   const [snackList, setSnackList] = useState<SnackInput[]>([]);
+  // 从食物库选入、营养已知的早/午/晚食物（与 contents 一一对应），估算时作为 ground truth 注入
+  const [knownFoods, setKnownFoods] = useState<Record<MealType, KnownFood[]>>({
+    breakfast: [],
+    lunch: [],
+    dinner: [],
+    snack: [],
+  });
   const [entries, setEntries] = useState<MealEntry[]>([]);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [estimatingMealId, setEstimatingMealId] = useState<string | null>(null);
@@ -143,7 +151,13 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       });
       const byType = (t: MealType) => list.find((m) => m.type === t)?.content || '';
       setContents({ breakfast: byType('breakfast'), lunch: byType('lunch'), dinner: byType('dinner'), snack: '' });
-      setSnackList(list.filter((m) => m.type === 'snack').map((m) => ({ id: m.id, content: m.content })));
+      setKnownFoods({
+        breakfast: list.find((m) => m.type === 'breakfast')?.knownFoods || [],
+        lunch: list.find((m) => m.type === 'lunch')?.knownFoods || [],
+        dinner: list.find((m) => m.type === 'dinner')?.knownFoods || [],
+        snack: [],
+      });
+      setSnackList(list.filter((m) => m.type === 'snack').map((m) => ({ id: m.id, content: m.content, knownFoods: m.knownFoods || [] })));
       setModels(await getModelConfigs());
       setFoodLib(await getFoodLibrary());
       setEstMsg('');
@@ -174,12 +188,25 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
 
   const appendFood = (f: FoodItem) => {
     const piece = f.name;
+    // 把食物库里的准确营养记录下来，估算时作为已知数据注入，保证这条食物的热量一定准
+    const kf: KnownFood = {
+      name: f.name,
+      foodId: f.id,
+      protein: f.protein || 0,
+      calories: f.calories || 0,
+      fat: f.fat || 0,
+      carbs: f.carbs || 0,
+      fiber: f.fiber || 0,
+      water: f.water,
+    };
     if (foodTarget?.type === 'snack' && foodTarget.idx != null) {
       const cur = snackList[foodTarget.idx]?.content || '';
-      updateSnack(foodTarget.idx, cur ? cur + '\n' + piece : piece);
+      const curKf = snackList[foodTarget.idx]?.knownFoods || [];
+      updateSnack(foodTarget.idx, cur ? cur + '\n' + piece : piece, [...curKf, kf]);
     } else if (foodTarget?.type) {
       const cur = contents[foodTarget.type];
       setContent(foodTarget.type, cur ? cur + '\n' + piece : piece);
+      setKnownFoods((s) => ({ ...s, [foodTarget.type]: [...s[foodTarget.type], kf] }));
     }
     setShowFoodPicker(false);
   };
@@ -193,9 +220,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   };
 
   const doSave = async () => {
-    await upsertMeal('breakfast', dateStr, contents.breakfast);
-    await upsertMeal('lunch', dateStr, contents.lunch);
-    await upsertMeal('dinner', dateStr, contents.dinner);
+    await upsertMeal('breakfast', dateStr, contents.breakfast, undefined, knownFoods.breakfast);
+    await upsertMeal('lunch', dateStr, contents.lunch, undefined, knownFoods.lunch);
+    await upsertMeal('dinner', dateStr, contents.dinner, undefined, knownFoods.dinner);
     // 处理加餐：删除被移除的旧条目，保存现有条目
     const prevSnackIds = entries.filter((m) => m.type === 'snack').map((m) => m.id);
     const keptIds = new Set(snackList.filter((s) => s.id).map((s) => s.id as string));
@@ -203,7 +230,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
       if (!keptIds.has(id)) await upsertMeal('snack', dateStr, '', id);
     }
     for (const s of snackList) {
-      if (s.content.trim()) await upsertMeal('snack', dateStr, s.content, s.id);
+      if (s.content.trim()) await upsertMeal('snack', dateStr, s.content, s.id, s.knownFoods);
     }
     onSaved?.();
     onClose();
@@ -219,9 +246,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     let id = entry.id;
     if (entry.type === 'snack') {
       id = entry.id || `${dateStr}_snack_${Date.now()}`;
-      await upsertMeal('snack', dateStr, entry.content, id);
+      await upsertMeal('snack', dateStr, entry.content, id, entry.knownFoods);
     } else {
-      await upsertMeal(entry.type, dateStr, entry.content);
+      await upsertMeal(entry.type, dateStr, entry.content, undefined, entry.knownFoods);
       id = `${dateStr}_${entry.type}`;
     }
     setEstimatingMealId(id);
@@ -301,9 +328,9 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   };
 
   const addSnack = () =>
-    setSnackList((s) => [...s, { id: `${dateStr}_snack_${Date.now()}_${s.length}`, content: '' }]);
-  const updateSnack = (idx: number, v: string) =>
-    setSnackList((s) => s.map((x, i) => (i === idx ? { ...x, content: v } : x)));
+    setSnackList((s) => [...s, { id: `${dateStr}_snack_${Date.now()}_${s.length}`, content: '', knownFoods: [] }]);
+  const updateSnack = (idx: number, v: string, kf?: KnownFood[]) =>
+    setSnackList((s) => s.map((x, i) => (i === idx ? { ...x, content: v, knownFoods: kf ?? x.knownFoods } : x)));
   const removeSnack = (idx: number) => setSnackList((s) => s.filter((_, i) => i !== idx));
 
   // 「今日已摄入 vs TDEE」进度条：吃了多少、还能吃多少
@@ -346,7 +373,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.mealEstBtn, estimating && styles.mealEstBtnDisabled]}
-            onPress={() => doEstimateMeal({ id: `${dateStr}_${f.key}`, type: f.key, content: contents[f.key], date: dateStr, createdAt: Date.now() })}
+            onPress={() => doEstimateMeal({ id: `${dateStr}_${f.key}`, type: f.key, content: contents[f.key], date: dateStr, createdAt: Date.now(), knownFoods: knownFoods[f.key] })}
             disabled={estimating || !contents[f.key].trim()}
           >
             {estimating ? <ActivityIndicator size="small" color="#8B5CF6" /> : <Ionicons name="sparkles-outline" size={13} color="#8B5CF6" />}
@@ -483,7 +510,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={[styles.snackEstBtn, estimating && styles.mealEstBtnDisabled]}
-                          onPress={() => s.content.trim() && doEstimateMeal({ id: s.id || `${dateStr}_snack_${idx}`, type: 'snack', content: s.content, date: dateStr, createdAt: Date.now() })}
+                          onPress={() => s.content.trim() && doEstimateMeal({ id: s.id || `${dateStr}_snack_${idx}`, type: 'snack', content: s.content, date: dateStr, createdAt: Date.now(), knownFoods: s.knownFoods })}
                           disabled={estimating || !s.content.trim()}
                         >
                           {estimating ? <ActivityIndicator size="small" color="#8B5CF6" /> : <Ionicons name="sparkles-outline" size={13} color="#8B5CF6" />}
