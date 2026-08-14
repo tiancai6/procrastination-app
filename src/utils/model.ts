@@ -80,7 +80,11 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
     } else if (res.status === 401 || res.status === 403) {
       msg += '：API Key 无效或没有权限，请检查密钥。';
     } else if (res.status === 404) {
-      msg += '：模型/接口找不到，请确认模型标识填的是接入点 ID（ep-xxxx）而非模型名。';
+      if (cfg.brand === 'doubao') {
+        msg += '：接口/模型找不到。火山方舟须填推理接入点 ID（ep-xxxx），不能直接填模型名。请确认接入点 ID 正确且该接入点已启用。';
+      } else {
+        msg += '：模型/接口找不到，请确认模型标识是否正确（可能已被下架或改名）。';
+      }
     } else if (res.status === 429) {
       msg += '：触发频率限制，请稍候重试。';
     }
