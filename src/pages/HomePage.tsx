@@ -423,10 +423,16 @@ const HomePage: React.FC = () => {
               {todayMeals.length > 0 ? `今天已记录 ${todayMeals.length} 餐` : '今天还没记录'}
             </Text>
           </View>
-          <TouchableOpacity style={styles.mealRecordBtn} onPress={() => setMealVisible(true)}>
-            <Text style={styles.mealRecordText}>记录</Text>
-            <Ionicons name="chevron-forward" size={14} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.mealHeadBtns}>
+            <TouchableOpacity style={styles.mealLibBtn} onPress={() => navigation.navigate('FoodLibrary')}>
+              <Ionicons name="fast-food-outline" size={13} color={COLORS.primary} />
+              <Text style={styles.mealLibText}>食物库</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.mealRecordBtn} onPress={() => setMealVisible(true)}>
+              <Text style={styles.mealRecordText}>记录</Text>
+              <Ionicons name="chevron-forward" size={14} color="#fff" />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* 详细三餐内容（含每餐营养组成与依据） */}
@@ -1007,6 +1013,27 @@ const styles = StyleSheet.create({
   },
   mealRecordText: {
     color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  mealHeadBtns: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mealLibBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.secondary,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    gap: 4,
+  },
+  mealLibText: {
+    color: COLORS.primary,
     fontSize: 12,
     fontWeight: '600',
   },
