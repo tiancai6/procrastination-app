@@ -961,6 +961,7 @@ export interface ExerciseRecord {
   kcal?: number; // AI 或手动估算的消耗
   note?: string;
   plan?: string; // 训练计划：类型之外的具体训练内容（如「力量」下填「胸+三头推举 4 组」）
+  timeOfDay?: 'morning' | 'forenoon' | 'afternoon' | 'evening' | 'night'; // 训练时段：晨/上午/下午/晚上/夜
 }
 export interface DailyActivity {
   baseLevel: 'sedentary' | 'light' | 'moderate' | 'high'; // 久坐/轻度/中度/高强度

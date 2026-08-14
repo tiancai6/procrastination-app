@@ -1,18 +1,25 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import TimerStatsPanel from '../components/TimerStatsPanel';
 import LedgerStatsPanel from '../components/LedgerStatsPanel';
 import MealStatsPanel from '../components/MealStatsPanel';
+import ExerciseCalendarPage from './ExerciseCalendarPage';
 
-type Segment = 'focus' | 'ledger' | 'meal';
+// 顺序：运动 → 消费 → 三餐 → 专注（运动放第一格，专注放最后）
+type Segment = 'exercise' | 'ledger' | 'meal' | 'focus';
+
+const SEGS: { key: Segment; label: string; icon: string }[] = [
+  { key: 'exercise', label: '运动', icon: 'barbell-outline' },
+  { key: 'ledger', label: '消费', icon: 'wallet-outline' },
+  { key: 'meal', label: '三餐', icon: 'restaurant-outline' },
+  { key: 'focus', label: '专注', icon: 'time-outline' },
+];
 
 const StatsCenterPage: React.FC = () => {
-  const navigation = useNavigation<any>();
-  const [segment, setSegment] = useState<Segment>('focus');
+  const [segment, setSegment] = useState<Segment>('exercise');
 
   return (
     <View style={styles.container}>
@@ -21,50 +28,26 @@ const StatsCenterPage: React.FC = () => {
           <Text style={styles.title}>统计中心</Text>
         </View>
         <View style={styles.segment}>
-          <TouchableOpacity
-            style={[styles.segmentBtn, segment === 'focus' && styles.segmentBtnActive]}
-            onPress={() => setSegment('focus')}
-          >
-            <Ionicons
-              name="time-outline"
-              size={15}
-              color={segment === 'focus' ? '#fff' : COLORS.textLight}
-            />
-            <Text style={[styles.segmentText, segment === 'focus' && styles.segmentTextActive]}>
-              专注
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.segmentBtn, segment === 'ledger' && styles.segmentBtnActive]}
-            onPress={() => setSegment('ledger')}
-          >
-            <Ionicons
-              name="wallet-outline"
-              size={15}
-              color={segment === 'ledger' ? '#fff' : COLORS.textLight}
-            />
-            <Text style={[styles.segmentText, segment === 'ledger' && styles.segmentTextActive]}>消费</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.segmentBtn, segment === 'meal' && styles.segmentBtnActive]}
-            onPress={() => setSegment('meal')}
-          >
-            <Ionicons
-              name="restaurant-outline"
-              size={15}
-              color={segment === 'meal' ? '#fff' : COLORS.textLight}
-            />
-            <Text style={[styles.segmentText, segment === 'meal' && styles.segmentTextActive]}>三餐</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.segmentBtn} onPress={() => navigation.navigate('ExerciseCalendar')}>
-            <Ionicons name="barbell-outline" size={15} color={COLORS.textLight} />
-            <Text style={styles.segmentText}>运动</Text>
-          </TouchableOpacity>
+          {SEGS.map((s) => {
+            const active = segment === s.key;
+            return (
+              <TouchableOpacity
+                key={s.key}
+                style={[styles.segmentBtn, active && styles.segmentBtnActive]}
+                onPress={() => setSegment(s.key)}
+              >
+                <Ionicons name={s.icon as any} size={17} color={active ? COLORS.primary : '#FFFFFF'} />
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{s.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
 
       <View style={styles.body}>
-        {segment === 'focus' ? (
+        {segment === 'exercise' ? (
+          <ExerciseCalendarPage embedded />
+        ) : segment === 'focus' ? (
           <TimerStatsPanel />
         ) : segment === 'ledger' ? (
           <LedgerStatsPanel />
@@ -107,10 +90,10 @@ const styles = StyleSheet.create({
   },
   segment: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.22)',
     borderRadius: 14,
     padding: 4,
-    gap: 4,
+    gap: 6,
   },
   segmentBtn: {
     flex: 1,
@@ -123,11 +106,16 @@ const styles = StyleSheet.create({
   },
   segmentBtnActive: {
     backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    elevation: 2,
   },
   segmentText: {
     fontSize: 14,
     fontWeight: '600',
-    color: 'rgba(255,255,255,0.9)',
+    color: 'rgba(255,255,255,0.95)',
   },
   segmentTextActive: {
     color: COLORS.primary,

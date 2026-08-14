@@ -6,11 +6,9 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
+import { Svg, Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
@@ -31,26 +29,28 @@ import {
 } from '../utils/storage';
 import { Habit, HabitCheckin } from '../types';
 import { getExerciseTypes, DEFAULT_EXERCISE_TYPES } from '../utils/activity';
-import { getActiveConfig } from '../utils/modelConfig';
-import { postChat } from '../utils/model';
 import TrendPage from './TrendPage';
 
-// 运动类型稳定调色板（按类型名哈希取色，保证同一类型始终同色）
+// 运动类型稳定调色板（保证同一类型始终同色；占比环形图用彩色区分类别）
 const TYPE_PALETTE = [
-  '#2563EB', '#10B981', '#F59E0B', '#8B5CF6',
-  '#EC4899', '#06B6D4', '#EF4444', '#84CC16',
+  '#2563EB', '#0EA5E9', '#6366F1', '#8B5CF6',
+  '#EC4899', '#14B8A6', '#F59E0B', '#84CC16',
 ];
-const hashType = (t: string): string => {
-  let h = 0;
-  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
-  return TYPE_PALETTE[h % TYPE_PALETTE.length];
-};
+
+// 训练时段（5 选 1）
+const TIME_SLOTS: { key: 'morning' | 'forenoon' | 'afternoon' | 'evening' | 'night'; label: string }[] = [
+  { key: 'morning', label: '晨' },
+  { key: 'forenoon', label: '上午' },
+  { key: 'afternoon', label: '下午' },
+  { key: 'evening', label: '晚上' },
+  { key: 'night', label: '夜' },
+];
 
 // 运动类习惯关键词（用于和习惯打卡联动）
 const SPORT_KEYWORDS = ['运动', '健身', '练', '跑', '瑜伽', '力量', '游泳', '骑行', '跳', '球', '徒步', '拉伸'];
 const isSportHabit = (name: string): boolean => SPORT_KEYWORDS.some((k) => name.includes(k));
 
-// 本地离线估算运动消耗（kcal），仅用于展示/AI 摘要兜底
+// 本地离线估算运动消耗（kcal），仅用于展示兜底
 const estKcalLocal = (type: string, min: number): number => {
   const t = type.toLowerCase();
   let rate = 6;
@@ -75,15 +75,18 @@ const fmtDur = (m: number): string => {
   return h > 0 ? `${h}:${String(mm).padStart(2, '0')}` : `${mm}′`;
 };
 
-type Segment = 'day' | 'week' | 'month' | 'year';
+// 热力图：按当天总时长占总时长最大值的比例，映射蓝色深浅
+const heatColor = (min: number, max: number): string | undefined => {
+  if (min <= 0) return undefined;
+  if (max <= 0) return '#DBEAFE';
+  const r = min / max;
+  if (r < 0.25) return '#DBEAFE';
+  if (r < 0.5) return '#BFDBFE';
+  if (r < 0.75) return '#93C5FD';
+  return '#3B82F6';
+};
 
-const EXERCISE_AI_PROMPT = `你是专业的健身与身体管理教练。用户给你一份已脱敏的运动与身体数据摘要（仅含数字，无个人身份信息）。
-请基于这些数据，用中文输出一份亲切、有数据支撑的分析与可执行建议，结构如下（用换行分段，不要输出 JSON）：
-一、整体运动情况（训练频率、总时长、消耗是否达标）
-二、训练结构点评（各类别占比是否合理，力量/有氧/柔韧是否均衡）
-三、身体趋势点评（体重/体脂/肌肉变化方向与速度，是否正常）
-四、下周具体建议（3-5 条，具体到「练什么、练几次、每次多久」）
-要求：语气鼓励、不评判；结论必须有数据支撑；不要编造摘要里没有的信息；总长度控制在 400 字以内。`;
+type Segment = 'day' | 'week' | 'month' | 'year';
 
 // 由 段(日/周/月/年) + 游标 + 选中日 推导统计区间与标题
 const rangeOf = (seg: Segment, cursor: Date, sel: string) => {
@@ -113,7 +116,48 @@ const rangeOf = (seg: Segment, cursor: Date, sel: string) => {
   return { start: toDateStr(new Date(y, 0, 1)), end: toDateStr(new Date(y, 11, 31)), label: `${y}年` };
 };
 
-const ExerciseCalendarPage: React.FC = () => {
+// 类别占比环形图（SVG 实现）
+const DonutChart: React.FC<{ segments: { label: string; value: number }[]; size?: number; thickness?: number }> = ({
+  segments,
+  size = 148,
+  thickness = 22,
+}) => {
+  const cx = size / 2;
+  const radius = (size - thickness) / 2;
+  const circ = 2 * Math.PI * radius;
+  const total = segments.reduce((s, d) => s + d.value, 0);
+  let acc = 0;
+  const colored = segments.filter((s) => s.value > 0);
+  return (
+    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <Circle cx={cx} cy={cx} r={radius} stroke={COLORS.border} strokeWidth={thickness} fill="none" />
+      {total > 0 &&
+        colored.map((s, i) => {
+          const len = (s.value / total) * circ;
+          const el = (
+            <Circle
+              key={s.label}
+              cx={cx}
+              cy={cx}
+              r={radius}
+              stroke={TYPE_PALETTE[i % TYPE_PALETTE.length]}
+              strokeWidth={thickness}
+              fill="none"
+              strokeDasharray={`${len} ${circ - len}`}
+              strokeDashoffset={-acc}
+              rotation="-90"
+              originX={cx}
+              originY={cx}
+            />
+          );
+          acc += len;
+          return el;
+        })}
+    </Svg>
+  );
+};
+
+const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const navigation = useNavigation<any>();
   const today = new Date();
   const todayStr = toDateStr(today);
@@ -133,9 +177,9 @@ const ExerciseCalendarPage: React.FC = () => {
   const [exNote, setExNote] = useState('');
   const [exCustom, setExCustom] = useState('');
   const [exPlan, setExPlan] = useState('');
+  const [exSlot, setExSlot] = useState<ExerciseRecord['timeOfDay'] | ''>('');
 
-  const [analysis, setAnalysis] = useState('');
-  const [analyzing, setAnalyzing] = useState(false);
+  const [distMode, setDistMode] = useState<'type' | 'slot'>('type');
   const [trendVisible, setTrendVisible] = useState(false);
 
   const loadAll = async () => {
@@ -176,6 +220,7 @@ const ExerciseCalendarPage: React.FC = () => {
     const typeMin: Record<string, number> = {};
     const typeKcal: Record<string, number> = {};
     const perWeekday = new Array(7).fill(0);
+    const perTimeOfDay: Record<string, number> = { morning: 0, forenoon: 0, afternoon: 0, evening: 0, night: 0 };
     entriesInRange.forEach(([date, act]) => {
       days += 1;
       act.exercises.forEach((e) => {
@@ -184,6 +229,7 @@ const ExerciseCalendarPage: React.FC = () => {
         typeMin[e.type] = (typeMin[e.type] || 0) + (e.durationMin || 0);
         typeKcal[e.type] = (typeKcal[e.type] || 0) + (e.kcal && e.kcal > 0 ? e.kcal : estKcalLocal(e.type, e.durationMin || 0));
         perWeekday[new Date(date + 'T00:00:00').getDay()] += e.durationMin || 0;
+        if (e.timeOfDay) perTimeOfDay[e.timeOfDay] += e.durationMin || 0;
       });
     });
     const totalKcal = Object.values(typeKcal).reduce((s, v) => s + v, 0);
@@ -192,14 +238,12 @@ const ExerciseCalendarPage: React.FC = () => {
       .map(([type, min]) => ({ type, min, pct: totalMin ? Math.round((min / totalMin) * 100) : 0 }));
     const typeMax = typeRows.reduce((m, r) => Math.max(m, r.min), 0);
     const maxWeekday = Math.max(...perWeekday, 0);
-    return { totalMin, totalCount, days, totalKcal, typeRows, typeMax, perWeekday, maxWeekday };
+    const maxSlot = Math.max(...Object.values(perTimeOfDay), 0);
+    return { totalMin, totalCount, days, totalKcal, typeRows, typeMax, perWeekday, maxWeekday, perTimeOfDay, maxSlot };
   }, [entriesInRange]);
 
   // —— 身体趋势（区间内，无则用全部）——
-  const bodyInRange = useMemo(
-    () => body.filter((s) => s.date >= range.start && s.date <= range.end),
-    [body, range],
-  );
+  const bodyInRange = useMemo(() => body.filter((s) => s.date >= range.start && s.date <= range.end), [body, range]);
   const bodySummary = useMemo(() => {
     const arr = bodyInRange.length ? bodyInRange : body;
     if (arr.length === 0) return null;
@@ -234,6 +278,19 @@ const ExerciseCalendarPage: React.FC = () => {
     }
     return cells;
   }, [cursor]);
+
+  // 当月最大单日时长（用于热力图深浅）
+  const monthMaxMin = useMemo(() => {
+    const prefix = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    let m = 0;
+    Object.entries(allActivity).forEach(([date, act]) => {
+      if (date.startsWith(prefix)) {
+        const d = act.exercises.reduce((s, e) => s + (e.durationMin || 0), 0);
+        if (d > m) m = d;
+      }
+    });
+    return m;
+  }, [allActivity, cursor]);
 
   const weekDays = useMemo(() => {
     const sd = new Date(selected + 'T00:00:00');
@@ -307,6 +364,7 @@ const ExerciseCalendarPage: React.FC = () => {
     setExNote('');
     setExCustom('');
     setExPlan('');
+    setExSlot('');
   };
 
   const openDay = (s: string) => {
@@ -321,6 +379,7 @@ const ExerciseCalendarPage: React.FC = () => {
     setExNote(e.note || '');
     setExCustom('');
     setExPlan(e.plan || '');
+    setExSlot(e.timeOfDay || '');
   };
 
   const handleSave = async () => {
@@ -343,13 +402,27 @@ const ExerciseCalendarPage: React.FC = () => {
     const cur = await getDailyActivity(selected);
     let exercises = cur.exercises.map((e) =>
       editing && e.id === editing.id
-        ? { ...e, type: finalType, durationMin: dur, note: exNote.trim() || undefined, plan: exPlan.trim() || undefined }
+        ? {
+            ...e,
+            type: finalType,
+            durationMin: dur,
+            note: exNote.trim() || undefined,
+            plan: exPlan.trim() || undefined,
+            timeOfDay: exSlot ? exSlot : undefined,
+          }
         : e,
     );
     if (!editing) {
       exercises = [
         ...exercises,
-        { id: generateId(), type: finalType, durationMin: dur, note: exNote.trim() || undefined, plan: exPlan.trim() || undefined },
+        {
+          id: generateId(),
+          type: finalType,
+          durationMin: dur,
+          note: exNote.trim() || undefined,
+          plan: exPlan.trim() || undefined,
+          timeOfDay: exSlot ? exSlot : undefined,
+        },
       ];
     }
     await setDailyActivity(selected, { ...cur, exercises });
@@ -370,54 +443,7 @@ const ExerciseCalendarPage: React.FC = () => {
     await loadAll();
   };
 
-  // —— AI 分析 ——
-  const analyze = async () => {
-    setAnalyzing(true);
-    setAnalysis('');
-    const cfg = await getActiveConfig(false);
-    if (!cfg) {
-      setAnalysis('未配置 AI 模型，请先到「我的 → 管理 AI 模型」添加模型。');
-      setAnalyzing(false);
-      return;
-    }
-    const summary: Record<string, unknown> = {
-      周期: range.label,
-      训练天数: periodStats.days,
-      总时长分钟: periodStats.totalMin,
-      总次数: periodStats.totalCount,
-      总消耗kcal: periodStats.totalKcal,
-      日均分钟: periodStats.days ? Math.round(periodStats.totalMin / periodStats.days) : 0,
-      类别时长占比: periodStats.typeRows.map((r) => ({ 类型: r.type, 分钟: r.min, 占比: r.pct + '%' })),
-      周几分布分钟: ['日', '一', '二', '三', '四', '五', '六'].map((w, i) => ({ 周几: '周' + w, 分钟: periodStats.perWeekday[i] })),
-      身体趋势: bodySummary
-        ? {
-            记录条数: bodySummary.count,
-            开始体重: bodySummary.startWeight,
-            最新体重: bodySummary.lastWeight,
-            体重变化: (bodySummary.change >= 0 ? '+' : '') + bodySummary.change + 'kg',
-            最新BMI: bodySummary.lastBmi,
-            体脂率: bodySummary.hasFat ? `${bodySummary.startFat}→${bodySummary.lastFat}%` : '无数据',
-            肌肉量: bodySummary.hasMuscle ? `${bodySummary.startMuscle}→${bodySummary.lastMuscle}kg` : '无数据',
-          }
-        : '无身体数据',
-    };
-    try {
-      const content = await postChat(
-        cfg,
-        [
-          { role: 'system', content: EXERCISE_AI_PROMPT },
-          { role: 'user', content: `以下是我的运动与身体数据摘要：\n${JSON.stringify(summary, null, 2)}\n请给我一份中文分析与建议。` },
-        ],
-        { temperature: 0.6, maxTokens: 1200 },
-      );
-      setAnalysis(content || '（AI 返回为空）');
-    } catch (e: any) {
-      setAnalysis('分析失败：' + (e?.message || '未知错误'));
-    }
-    setAnalyzing(false);
-  };
-
-  // —— 渲染：日历单元格（月视图）——
+  // —— 渲染：月历单元格（热力图）——
   const renderCell = (d: Date) => {
     const s = toDateStr(d);
     const isThisMonth = d.getMonth() === cursor.getMonth();
@@ -425,23 +451,23 @@ const ExerciseCalendarPage: React.FC = () => {
     const isSel = s === selected;
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
+    const heat = !isThisMonth ? undefined : heatColor(dur, monthMaxMin);
     return (
       <TouchableOpacity
         key={s}
-        style={[styles.cell, isToday && styles.cellToday, !isThisMonth && styles.cellOtherMonth, isSel && styles.cellSelected]}
+        style={[
+          styles.cell,
+          isToday && styles.cellToday,
+          !isThisMonth && styles.cellOtherMonth,
+          isSel && styles.cellSelected,
+          heat && !isSel && !isToday && { backgroundColor: heat },
+        ]}
         onPress={() => openDay(s)}
       >
         <Text style={[styles.cellNum, !isThisMonth && styles.cellNumDim, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>
           {d.getDate()}
         </Text>
-        {exercises.length > 0 ? (
-          <View style={styles.cellExDots}>
-            {exercises.slice(0, 3).map((e) => (
-              <View key={e.id} style={[styles.cellExDot, { backgroundColor: hashType(e.type) }]} />
-            ))}
-            <Text style={styles.cellDur}>{fmtDur(dur)}</Text>
-          </View>
-        ) : null}
+        {dur > 0 && <Text style={[styles.cellDur, isSel && styles.cellNumSel]}>{fmtDur(dur)}</Text>}
       </TouchableOpacity>
     );
   };
@@ -452,23 +478,29 @@ const ExerciseCalendarPage: React.FC = () => {
     const isSel = s === selected;
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
+    const heat = heatColor(dur, weekMaxMin);
     return (
       <TouchableOpacity
         key={s}
-        style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected]}
+        style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected, heat && !isSel && !isToday && { backgroundColor: heat }]}
         onPress={() => openDay(s)}
       >
         <Text style={styles.wkWeekday}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
         <Text style={[styles.wkNum, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>{d.getDate()}</Text>
-        {exercises.length > 0 && (
-          <View style={styles.wkFoot}>
-            <View style={[styles.wkDot, { backgroundColor: hashType(exercises[0].type) }]} />
-            <Text style={styles.wkDur}>{fmtDur(dur)}</Text>
-          </View>
-        )}
+        {dur > 0 && <Text style={[styles.wkDur, isSel && styles.cellNumSel]}>{fmtDur(dur)}</Text>}
       </TouchableOpacity>
     );
   };
+
+  const weekMaxMin = useMemo(() => {
+    let m = 0;
+    weekDays.forEach((d) => {
+      const s = toDateStr(d);
+      const dur = (allActivity[s]?.exercises || []).reduce((sum, e) => sum + (e.durationMin || 0), 0);
+      if (dur > m) m = dur;
+    });
+    return m;
+  }, [weekDays, allActivity]);
 
   const segBtns: { key: Segment; label: string }[] = [
     { key: 'day', label: '日' },
@@ -477,22 +509,23 @@ const ExerciseCalendarPage: React.FC = () => {
     { key: 'year', label: '年' },
   ];
 
-  const showGrid = segment !== 'year';
-
   return (
     <View style={styles.container}>
-      {/* 顶部栏 */}
-      <View style={styles.header}>
+      {/* 顶部栏（embedded 时嵌入统计中心，不再有返回、去掉顶部圆角） */}
+      <View style={[styles.header, embedded && styles.headerEmbed]}>
         <View style={styles.headerTop}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-            <Ionicons name="chevron-back" size={24} color="#fff" />
-          </TouchableOpacity>
-          <Text style={styles.title}>运动日历</Text>
+          {!embedded ? (
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+              <Ionicons name="chevron-back" size={24} color="#fff" />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.headerSide} />
+          )}
+          <Text style={[styles.title, { flex: 1, textAlign: 'center' }]}>{embedded ? '运动记录' : '运动日历'}</Text>
           <TouchableOpacity style={styles.todayBtn} onPress={goToday}>
             <Text style={styles.todayBtnText}>今天</Text>
           </TouchableOpacity>
         </View>
-        {/* 日/周/月/年 段选择 */}
         <View style={styles.segment}>
           {segBtns.map((b) => (
             <TouchableOpacity
@@ -518,7 +551,14 @@ const ExerciseCalendarPage: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* 日历 / 周条 / 年柱图 */}
+        {/* 日 视图：聚焦当天，不显示月历 */}
+        {segment === 'day' && (
+          <Text style={styles.focusHint}>
+            已聚焦 {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日，下面直接显示这一天的训练与添加入口
+          </Text>
+        )}
+
+        {/* 周 / 月 / 年 视图 */}
         {segment === 'year' ? (
           <View style={styles.yearBox}>
             {yearBars.arr.map((bar) => (
@@ -547,22 +587,24 @@ const ExerciseCalendarPage: React.FC = () => {
           <View style={styles.weekStrip}>
             {weekDays.map((d) => renderWeekCell(d))}
           </View>
-        ) : (
+        ) : segment === 'month' ? (
           <>
             <View style={styles.weekHeader}>
               {WEEK_LABELS.map((w) => (
-                <Text key={w} style={styles.weekHeaderText}>{w.replace('周', '')}</Text>
+                <Text key={w} style={styles.weekHeaderText}>
+                  {w.replace('周', '')}
+                </Text>
               ))}
             </View>
             <View style={styles.grid}>{monthCells.map((d) => renderCell(d))}</View>
           </>
-        )}
+        ) : null}
 
         <Text style={styles.hint}>
-          点任意日期查看 / 补记当天运动；有颜色圆点即当天有训练，下方显示该天具体事项。
+          点任意日期查看 / 补记当天运动；颜色越深代表当天练得越久（热力图）。
         </Text>
 
-        {/* —— 选中日期详情面板（常驻日历下方，替代旧弹窗） —— */}
+        {/* —— 选中日期详情面板（常驻下方） —— */}
         <View style={styles.detailPanel}>
           <View style={styles.detailHead}>
             <Ionicons name="barbell-outline" size={16} color={COLORS.primary} />
@@ -581,22 +623,28 @@ const ExerciseCalendarPage: React.FC = () => {
                   共 {dayExercises.length} 项 · 总时长 {fmtDur(dayExercises.reduce((s, e) => s + (e.durationMin || 0), 0))}
                 </Text>
               </View>
-              {dayExercises.map((e) => (
-                <View key={e.id} style={[styles.exItem, editing?.id === e.id && styles.exItemEditing]}>
-                  <View style={[styles.exDot, { backgroundColor: hashType(e.type) }]} />
-                  <View style={styles.exBody}>
-                    <Text style={styles.exItemName}>{e.type}</Text>
-                    <Text style={styles.exItemSub}>时长 {fmtDur(e.durationMin)}{e.note ? ` · ${e.note}` : ''}</Text>
-                    {e.plan ? <Text style={styles.exItemPlan}>计划：{e.plan}</Text> : null}
+              {dayExercises.map((e) => {
+                const slotLabel = e.timeOfDay ? TIME_SLOTS.find((s) => s.key === e.timeOfDay)?.label : '';
+                return (
+                  <View key={e.id} style={[styles.exItem, editing?.id === e.id && styles.exItemEditing]}>
+                    <View style={[styles.exDot, { backgroundColor: TYPE_PALETTE[TYPE_PALETTE.indexOf(TYPE_PALETTE[0])] }]} />
+                    <View style={styles.exBody}>
+                      <Text style={styles.exItemName}>
+                        {e.type}
+                        {slotLabel ? <Text style={styles.exItemSlot}> · {slotLabel}</Text> : null}
+                      </Text>
+                      <Text style={styles.exItemSub}>时长 {fmtDur(e.durationMin)}{e.note ? ` · ${e.note}` : ''}</Text>
+                      {e.plan ? <Text style={styles.exItemPlan}>计划：{e.plan}</Text> : null}
+                    </View>
+                    <TouchableOpacity style={styles.exAction} onPress={() => startEdit(e)}>
+                      <Ionicons name="create-outline" size={18} color={COLORS.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.exAction} onPress={() => handleDelete(e.id)}>
+                      <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
+                    </TouchableOpacity>
                   </View>
-                  <TouchableOpacity style={styles.exAction} onPress={() => startEdit(e)}>
-                    <Ionicons name="create-outline" size={18} color={COLORS.primary} />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.exAction} onPress={() => handleDelete(e.id)}>
-                    <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
-                  </TouchableOpacity>
-                </View>
-              ))}
+                );
+              })}
             </>
           )}
 
@@ -627,7 +675,6 @@ const ExerciseCalendarPage: React.FC = () => {
                   style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
                   onPress={() => setExType(t)}
                 >
-                  <View style={[styles.exTypeDot, { backgroundColor: hashType(t) }]} />
                   <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
                 </TouchableOpacity>
               ))}
@@ -640,6 +687,18 @@ const ExerciseCalendarPage: React.FC = () => {
             )}
             <Text style={styles.sheetLabel}>时长（分钟）</Text>
             <TextInput style={styles.inputBox} keyboardType="numeric" placeholder="如 45" placeholderTextColor={COLORS.textLighter} value={exDuration} onChangeText={setExDuration} returnKeyType="done" blurOnSubmit />
+            <Text style={styles.sheetLabel}>训练时段（可选）</Text>
+            <View style={styles.slotRow}>
+              {TIME_SLOTS.map((s) => (
+                <TouchableOpacity
+                  key={s.key}
+                  style={[styles.slotChip, exSlot === s.key && styles.slotChipActive]}
+                  onPress={() => setExSlot(exSlot === s.key ? '' : s.key)}
+                >
+                  <Text style={[styles.slotChipText, exSlot === s.key && styles.slotChipTextActive]}>{s.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <Text style={styles.sheetLabel}>训练计划（具体练了什么，可选）</Text>
             <TextInput style={styles.inputBox} placeholder="如：胸+三头推举 4 组、深蹲 5×5" placeholderTextColor={COLORS.textLighter} value={exPlan} onChangeText={setExPlan} returnKeyType="done" blurOnSubmit />
             <Text style={styles.sheetLabel}>备注（可选）</Text>
@@ -674,56 +733,78 @@ const ExerciseCalendarPage: React.FC = () => {
           </View>
         </View>
 
-        {/* —— 类别占比 —— */}
-        {periodStats.typeRows.length > 0 && (
+        {/* —— 类别占比 / 具体时段 切换 —— */}
+        {periodStats.totalMin > 0 && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>训练类别占比（{range.label}）</Text>
-            {periodStats.typeRows.map((r) => (
-              <View key={r.type} style={styles.typeRow}>
-                <Text style={styles.typeName}>{r.type}</Text>
-                <View style={styles.typeBarTrack}>
-                  <View style={[styles.typeBar, { width: `${periodStats.typeMax ? (r.min / periodStats.typeMax) * 100 : 0}%`, backgroundColor: hashType(r.type) }]} />
-                </View>
-                <Text style={styles.typeMin}>{r.min}′ · {r.pct}%</Text>
+            <View style={styles.distHead}>
+              <Text style={styles.cardTitle}>训练分布（{range.label}）</Text>
+              <View style={styles.distToggle}>
+                <TouchableOpacity style={[styles.distToggleBtn, distMode === 'type' && styles.distToggleActive]} onPress={() => setDistMode('type')}>
+                  <Text style={[styles.distToggleText, distMode === 'type' && styles.distToggleTextActive]}>类别</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.distToggleBtn, distMode === 'slot' && styles.distToggleActive]} onPress={() => setDistMode('slot')}>
+                  <Text style={[styles.distToggleText, distMode === 'slot' && styles.distToggleTextActive]}>时段</Text>
+                </TouchableOpacity>
               </View>
-            ))}
+            </View>
+
+            {distMode === 'type' ? (
+              <View style={styles.donutWrap}>
+                <View style={styles.donutBox}>
+                  <DonutChart segments={periodStats.typeRows.map((r) => ({ label: r.type, value: r.min }))} />
+                  <View style={styles.donutCenter}>
+                    <Text style={styles.donutCenterNum}>{fmtDur(periodStats.totalMin)}</Text>
+                    <Text style={styles.donutCenterLabel}>总时长</Text>
+                  </View>
+                </View>
+                <View style={styles.donutLegend}>
+                  {periodStats.typeRows.map((r, i) => (
+                    <View key={r.type} style={styles.legendRow}>
+                      <View style={[styles.legendDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
+                      <Text style={styles.legendName}>{r.type}</Text>
+                      <Text style={styles.legendPct}>{r.pct}%</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : (
+              TIME_SLOTS.map((s) => {
+                const min = periodStats.perTimeOfDay[s.key] || 0;
+                return (
+                  <View key={s.key} style={styles.typeRow}>
+                    <Text style={styles.typeName}>{s.label}</Text>
+                    <View style={styles.typeBarTrack}>
+                      <View style={[styles.typeBar, { width: `${periodStats.maxSlot ? (min / periodStats.maxSlot) * 100 : 0}%`, backgroundColor: COLORS.primaryLight }]} />
+                    </View>
+                    <Text style={styles.typeMin}>{min > 0 ? fmtDur(min) : '·'}</Text>
+                  </View>
+                );
+              })
+            )}
           </View>
         )}
 
-        {/* —— 训练时段分布（按周几） —— */}
-        {periodStats.maxWeekday > 0 && (
+        {/* —— 身体趋势小结（区间内） —— */}
+        {bodySummary && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>训练时段分布（按周几 · {range.label}）</Text>
-            {['日', '一', '二', '三', '四', '五', '六'].map((w, i) => (
-              <View key={w} style={styles.typeRow}>
-                <Text style={styles.typeName}>周{w}</Text>
-                <View style={styles.typeBarTrack}>
-                  <View style={[styles.typeBar, { width: `${periodStats.maxWeekday ? (periodStats.perWeekday[i] / periodStats.maxWeekday) * 100 : 0}%`, backgroundColor: COLORS.accent }]} />
-                </View>
-                <Text style={styles.typeMin}>{periodStats.perWeekday[i] > 0 ? fmtDur(periodStats.perWeekday[i]) : '·'}</Text>
-              </View>
-            ))}
+            <Text style={styles.cardTitle}>身体趋势小结（{range.label}）</Text>
+            <Text style={styles.bodySummaryText}>
+              体重 {bodySummary.startWeight} → {bodySummary.lastWeight} kg（{bodySummary.change >= 0 ? '+' : ''}
+              {bodySummary.change}） · BMI {bodySummary.lastBmi}
+              {bodySummary.hasFat ? ` · 体脂 ${bodySummary.startFat}→${bodySummary.lastFat}%` : ''}
+              {bodySummary.hasMuscle ? ` · 肌肉 ${bodySummary.startMuscle}→${bodySummary.lastMuscle}kg` : ''}
+            </Text>
           </View>
         )}
 
-        {/* —— AI 分析 —— */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>AI 运动与身体分析（{range.label}）</Text>
-          <TouchableOpacity style={styles.aiBtn} onPress={analyze} disabled={analyzing}>
-            {analyzing ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="sparkles-outline" size={16} color="#fff" />}
-            <Text style={styles.aiBtnText}>{analyzing ? '分析中…' : analysis ? '重新分析' : 'AI 分析我的运动与身体趋势'}</Text>
-          </TouchableOpacity>
-          {analysis ? <Text style={styles.aiText}>{analysis}</Text> : null}
-        </View>
+        {/* —— 底部：查看健身与身体趋势（进入 TrendPage，AI 分析在其底部） —— */}
+        <TouchableOpacity style={styles.bottomBtn} onPress={() => setTrendVisible(true)}>
+          <Ionicons name="pulse-outline" size={18} color="#fff" />
+          <Text style={styles.bottomBtnText}>查看健身与身体趋势</Text>
+        </TouchableOpacity>
 
         <View style={{ height: 90 }} />
       </ScrollView>
-
-      {/* 底部：查看健身与身体趋势 */}
-      <TouchableOpacity style={styles.bottomBtn} onPress={() => setTrendVisible(true)}>
-        <Ionicons name="pulse-outline" size={18} color="#fff" />
-        <Text style={styles.bottomBtnText}>查看健身与身体趋势</Text>
-      </TouchableOpacity>
 
       <TrendPage visible={trendVisible} onClose={() => setTrendVisible(false)} />
     </View>
@@ -745,27 +826,30 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 6,
   },
+  headerEmbed: { borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 14 },
   headerTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  backBtn: { padding: 2 },
-  title: { fontSize: 24, fontWeight: 'bold', color: '#FFFFFF' },
-  todayBtn: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.18)' },
+  headerSide: { width: 28 },
+  backBtn: { padding: 2, width: 28 },
+  title: { fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' },
+  todayBtn: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.2)' },
   todayBtnText: { fontSize: 13, color: '#fff', fontWeight: '500' },
-  segment: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 12, padding: 3 },
+  segment: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 12, padding: 3 },
   segBtn: { flex: 1, alignItems: 'center', paddingVertical: 7, borderRadius: 9 },
   segBtnActive: { backgroundColor: '#fff' },
   segText: { fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: '600' },
   segTextActive: { color: COLORS.primary, fontWeight: '700' },
 
   scroll: { flex: 1, paddingTop: 8 },
-  navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, paddingVertical: 10 },
+  focusHint: { fontSize: 12.5, color: COLORS.textLight, textAlign: 'center', paddingVertical: 8, paddingHorizontal: 24 },
+  navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, paddingVertical: 6 },
   navTitle: { fontSize: 16, fontWeight: '600', color: COLORS.text, minWidth: 150, textAlign: 'center' },
 
   weekHeader: { flexDirection: 'row', marginTop: 6, marginBottom: 4, paddingHorizontal: 8 },
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 12, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8 },
   cell: {
-    width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'flex-start',
-    borderRadius: 10, paddingTop: 4, paddingHorizontal: 2, marginBottom: 2,
+    width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
+    borderRadius: 10, paddingTop: 2, paddingHorizontal: 2, marginBottom: 2,
   },
   cellOtherMonth: { opacity: 0.4 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
@@ -774,9 +858,7 @@ const styles = StyleSheet.create({
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
-  cellExDots: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 3, justifyContent: 'center', alignItems: 'center' },
-  cellExDot: { width: 6, height: 6, borderRadius: 3 },
-  cellDur: { fontSize: 9, color: COLORS.textLight, fontWeight: '600' },
+  cellDur: { fontSize: 10, color: COLORS.textLight, fontWeight: '600', marginTop: 1 },
 
   weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4 },
   wkCell: {
@@ -785,8 +867,6 @@ const styles = StyleSheet.create({
   },
   wkWeekday: { fontSize: 11, color: COLORS.textLight },
   wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 2 },
-  wkFoot: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  wkDot: { width: 7, height: 7, borderRadius: 3.5 },
   wkDur: { fontSize: 10, color: COLORS.textLight, fontWeight: '600' },
 
   yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 6, alignItems: 'flex-end', height: 200 },
@@ -798,7 +878,6 @@ const styles = StyleSheet.create({
 
   hint: { fontSize: 12, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 10, paddingHorizontal: 20 },
 
-  // 选中日详情面板
   detailPanel: {
     backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 4, borderRadius: 16, padding: 16,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
@@ -816,9 +895,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0.5, borderBottomColor: COLORS.border,
   },
   exItemEditing: { backgroundColor: COLORS.secondary, borderRadius: 10, borderBottomWidth: 0, paddingHorizontal: 8, marginHorizontal: -8 },
-  exDot: { width: 10, height: 10, borderRadius: 5 },
+  exDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.primaryLight },
   exBody: { flex: 1 },
   exItemName: { fontSize: 14, fontWeight: '600', color: COLORS.text },
+  exItemSlot: { fontSize: 12, color: COLORS.primary, fontWeight: '600' },
   exItemSub: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
   exItemPlan: { fontSize: 12, color: COLORS.primary, marginTop: 2 },
   exAction: { paddingHorizontal: 6, paddingVertical: 4 },
@@ -839,9 +919,16 @@ const styles = StyleSheet.create({
     borderRadius: 14, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border,
   },
   exTypeChipActive: { backgroundColor: COLORS.secondary, borderColor: COLORS.primary },
-  exTypeDot: { width: 8, height: 8, borderRadius: 4 },
   exTypeChipText: { fontSize: 13, color: COLORS.text },
   exTypeChipTextActive: { color: COLORS.primary, fontWeight: '600' },
+  slotRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  slotChip: {
+    paddingVertical: 7, paddingHorizontal: 16, borderRadius: 14,
+    backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border,
+  },
+  slotChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  slotChipText: { fontSize: 13, color: COLORS.text },
+  slotChipTextActive: { color: '#fff', fontWeight: '600' },
   inputBox: {
     backgroundColor: COLORS.background, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10,
     fontSize: 15, color: COLORS.text, borderWidth: 1, borderColor: COLORS.border,
@@ -872,22 +959,35 @@ const styles = StyleSheet.create({
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
   },
   cardTitle: { fontSize: 14, fontWeight: 'bold', color: COLORS.text, marginBottom: 12 },
+  distHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  distToggle: { flexDirection: 'row', backgroundColor: COLORS.background, borderRadius: 10, padding: 3 },
+  distToggleBtn: { paddingVertical: 5, paddingHorizontal: 14, borderRadius: 8 },
+  distToggleActive: { backgroundColor: COLORS.primary },
+  distToggleText: { fontSize: 12.5, color: COLORS.textLight, fontWeight: '600' },
+  distToggleTextActive: { color: '#fff', fontWeight: '700' },
+
+  donutWrap: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  donutBox: { position: 'relative', width: 148, height: 148 },
+  donutCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  donutCenterNum: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
+  donutCenterLabel: { fontSize: 11, color: COLORS.textLight, marginTop: 2 },
+  donutLegend: { flex: 1, gap: 8 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendName: { flex: 1, fontSize: 13, color: COLORS.text, fontWeight: '500' },
+  legendPct: { fontSize: 13, fontWeight: '600', color: COLORS.textLight },
+
   typeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  typeName: { width: 64, fontSize: 12.5, color: COLORS.text, fontWeight: '600' },
+  typeName: { width: 56, fontSize: 12.5, color: COLORS.text, fontWeight: '600' },
   typeBarTrack: { flex: 1, height: 14, backgroundColor: COLORS.background, borderRadius: 7, overflow: 'hidden' },
   typeBar: { height: '100%', borderRadius: 7, minWidth: 4 },
   typeMin: { width: 64, textAlign: 'right', fontSize: 12, color: COLORS.textLight },
 
-  aiBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 12, borderRadius: 14, backgroundColor: COLORS.primary,
-  },
-  aiBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  aiText: { fontSize: 13.5, color: COLORS.text, lineHeight: 22, marginTop: 12 },
+  bodySummaryText: { fontSize: 13, color: COLORS.text, lineHeight: 20 },
 
   bottomBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    margin: 12, paddingVertical: 13, borderRadius: 14, backgroundColor: COLORS.accent,
+    marginHorizontal: 16, marginTop: 16, paddingVertical: 13, borderRadius: 14, backgroundColor: COLORS.primary,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
   bottomBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
