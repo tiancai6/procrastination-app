@@ -35,8 +35,8 @@ import TrendPage from './TrendPage';
 
 // 运动类型稳定调色板（保证同一类型始终同色；占比环形图用彩色区分类别）
 const TYPE_PALETTE = [
-  '#2563EB', '#0EA5E9', '#6366F1', '#8B5CF6',
-  '#EC4899', '#14B8A6', '#F59E0B', '#84CC16',
+  '#6E8CB0', '#7FA99B', '#9B86C4', '#C58BAB',
+  '#D2A679', '#8FAE7E', '#C9B36A', '#8A9BB0',
 ];
 
 // 训练时段（5 选 1）
@@ -77,16 +77,7 @@ const fmtDur = (m: number): string => {
   return h > 0 ? `${h}:${String(mm).padStart(2, '0')}` : `${mm}′`;
 };
 
-// 热力图：按当天总时长占总时长最大值的比例，映射蓝色深浅
-const heatColor = (min: number, max: number): string | undefined => {
-  if (min <= 0) return undefined;
-  if (max <= 0) return '#DBEAFE';
-  const r = min / max;
-  if (r < 0.25) return '#DBEAFE';
-  if (r < 0.5) return '#BFDBFE';
-  if (r < 0.75) return '#93C5FD';
-  return '#93C5FD';
-};
+// 热力图已去除：月历格子统一白底 + 浅灰边框，运动类型用小圆点区分
 
 type Segment = 'day' | 'week' | 'month' | 'year';
 
@@ -286,19 +277,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     return cells;
   }, [cursor]);
 
-  // 当月最大单日时长（用于热力图深浅）
-  const monthMaxMin = useMemo(() => {
-    const prefix = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
-    let m = 0;
-    Object.entries(allActivity).forEach(([date, act]) => {
-      if (date.startsWith(prefix)) {
-        const d = act.exercises.reduce((s, e) => s + (e.durationMin || 0), 0);
-        if (d > m) m = d;
-      }
-    });
-    return m;
-  }, [allActivity, cursor]);
-
   const weekDays = useMemo(() => {
     const sd = new Date(selected + 'T00:00:00');
     const dow = (sd.getDay() + 6) % 7;
@@ -480,7 +458,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const isSel = s === selected;
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
-    const heat = !isThisMonth ? undefined : heatColor(dur, monthMaxMin);
     // 按类型聚合时长（同类型多条合并显示）
     const typeMap = new Map<string, number>();
     exercises.forEach((e) => {
@@ -496,7 +473,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           isToday && styles.cellToday,
           !isThisMonth && styles.cellOtherMonth,
           isSel && styles.cellSelected,
-          heat && !isSel && !isToday && { backgroundColor: heat },
         ]}
         onPress={() => openDay(s)}
       >
@@ -506,16 +482,18 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         {typeEntries.length > 0 && (
           <View style={styles.cellExList}>
             {typeEntries.slice(0, 3).map(([type, min], i) => (
-              <Text
-                key={type}
-                style={[
-                  styles.cellExItem,
-                  isSel && styles.cellExItemSel,
-                  { color: isSel ? '#fff' : TYPE_PALETTE[i % TYPE_PALETTE.length] },
-                ]}
-              >
-                {type} {fmtDur(min)}
-              </Text>
+              <View key={type} style={styles.cellExRow}>
+                <View style={[styles.cellExDot, { backgroundColor: isSel ? '#fff' : TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
+                <Text
+                  style={[
+                    styles.cellExItem,
+                    isSel && styles.cellExItemSel,
+                    { color: isSel ? '#fff' : '#475569' },
+                  ]}
+                >
+                  {type} {fmtDur(min)}
+                </Text>
+              </View>
             ))}
             {typeEntries.length > 3 && (
               <Text style={[styles.cellExMore, isSel && styles.cellExItemSel]}>
@@ -534,7 +512,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const isSel = s === selected;
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
-    const heat = heatColor(dur, weekMaxMin);
     // 按类型聚合
     const typeMap = new Map<string, number>();
     exercises.forEach((e) => {
@@ -545,7 +522,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     return (
       <TouchableOpacity
         key={s}
-        style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected, heat && !isSel && !isToday && { backgroundColor: heat }]}
+        style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected]}
         onPress={() => openDay(s)}
       >
         <Text style={styles.wkWeekday}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
@@ -553,12 +530,12 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         {typeEntries.length > 0 && (
           <View style={styles.wkExList}>
             {typeEntries.slice(0, 3).map(([type, min], i) => (
-              <Text
-                key={type}
-                style={[styles.wkExItem, { color: TYPE_PALETTE[i % TYPE_PALETTE.length] }]}
-              >
-                {type} {fmtDur(min)}
-              </Text>
+              <View key={type} style={styles.wkExRow}>
+                <View style={[styles.wkExDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
+                <Text style={[styles.wkExItem, { color: '#475569' }]}>
+                  {type} {fmtDur(min)}
+                </Text>
+              </View>
             ))}
             {typeEntries.length > 3 && (
               <Text style={styles.wkExMore}>+{typeEntries.length - 3}</Text>
@@ -568,16 +545,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
       </TouchableOpacity>
     );
   };
-
-  const weekMaxMin = useMemo(() => {
-    let m = 0;
-    weekDays.forEach((d) => {
-      const s = toDateStr(d);
-      const dur = (allActivity[s]?.exercises || []).reduce((sum, e) => sum + (e.durationMin || 0), 0);
-      if (dur > m) m = dur;
-    });
-    return m;
-  }, [weekDays, allActivity]);
 
   const segBtns: { key: Segment; label: string }[] = [
     { key: 'day', label: '日' },
@@ -626,6 +593,24 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           <TouchableOpacity onPress={() => shiftRange(1)}>
             <Ionicons name="chevron-forward" size={22} color={COLORS.text} />
           </TouchableOpacity>
+        </View>
+
+        {/* —— 区间统计（上移：进页面先看到总量） —— */}
+        <View style={styles.statBar}>
+          <View style={styles.statItem}>
+            <Text style={styles.statNum}>{periodStats.days}</Text>
+            <Text style={styles.statLabel}>训练天数</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statNum}>{fmtDur(periodStats.totalMin)}</Text>
+            <Text style={styles.statLabel}>总时长</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statNum}>{periodStats.totalKcal}</Text>
+            <Text style={styles.statLabel}>总消耗(kcal)</Text>
+          </View>
         </View>
 
         {/* 日 视图：聚焦当天，不显示月历 */}
@@ -678,7 +663,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         ) : null}
 
         <Text style={styles.hint}>
-          点任意日期查看 / 补记当天运动；颜色越深代表当天练得越久（热力图）。
+          点任意日期查看 / 补记当天运动；每格的小圆点表示当天的运动类型。
         </Text>
 
         {/* —— 日视图：紧凑摘要行（点击弹出详情 Modal） —— */}
@@ -719,24 +704,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
             <Ionicons name="chevron-forward" size={16} color={COLORS.textLight} />
           </TouchableOpacity>
         )}
-
-        {/* —— 区间统计 —— */}
-        <View style={styles.statBar}>
-          <View style={styles.statItem}>
-            <Text style={styles.statNum}>{periodStats.days}</Text>
-            <Text style={styles.statLabel}>训练天数</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNum}>{fmtDur(periodStats.totalMin)}</Text>
-            <Text style={styles.statLabel}>总时长</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNum}>{periodStats.totalKcal}</Text>
-            <Text style={styles.statLabel}>总消耗(kcal)</Text>
-          </View>
-        </View>
 
         {/* —— 类别占比 / 具体时段 切换 —— */}
         {periodStats.totalMin > 0 && (
@@ -1035,8 +1002,9 @@ const styles = StyleSheet.create({
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 11.5, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 6 },
   cell: {
-    width: '14.28%', aspectRatio: 0.62, alignItems: 'center', justifyContent: 'flex-start',
+    width: '14.28%', aspectRatio: 0.68, alignItems: 'center', justifyContent: 'flex-start',
     borderRadius: 8, paddingTop: 2, paddingHorizontal: 2, marginBottom: 1,
+    borderWidth: 1, borderColor: '#F1F5F9',
   },
   cellOtherMonth: { opacity: 0.4 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
@@ -1046,8 +1014,10 @@ const styles = StyleSheet.create({
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
   cellExList: { alignItems: 'center', marginTop: 0, flex: 1 },
-  cellExItem: { fontSize: 8, fontWeight: '600', lineHeight: 10.5, textAlign: 'center' },
+  cellExRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  cellExItem: { fontSize: 9, fontWeight: '500', lineHeight: 11, textAlign: 'center' },
   cellExItemSel: { color: '#fff' },
+  cellExDot: { width: 4, height: 4, borderRadius: 2, flexShrink: 0 },
   cellExMore: { fontSize: 8, color: '#fff', lineHeight: 12 },
 
   weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 2 },
@@ -1058,7 +1028,9 @@ const styles = StyleSheet.create({
   wkWeekday: { fontSize: 11, color: COLORS.textLight },
   wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 2 },
   wkExList: { alignItems: 'center', marginTop: 2, flex: 1 },
-  wkExItem: { fontSize: 9, fontWeight: '600', lineHeight: 12, textAlign: 'center' },
+  wkExRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  wkExItem: { fontSize: 10, fontWeight: '500', lineHeight: 13, textAlign: 'center' },
+  wkExDot: { width: 5, height: 5, borderRadius: 2.5, flexShrink: 0 },
   wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13 },
 
   yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4, alignItems: 'flex-end', height: 170 },
