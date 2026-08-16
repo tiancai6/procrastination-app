@@ -30,7 +30,7 @@ import {
   BodyProfileSnapshot,
 } from '../utils/storage';
 import { Habit, HabitCheckin } from '../types';
-import { getExerciseTypes, DEFAULT_EXERCISE_TYPES, estimateExerciseKcal } from '../utils/activity';
+import { getExerciseTypes, DEFAULT_EXERCISE_TYPES, estimateExerciseKcal, addExerciseType, removeExerciseType } from '../utils/activity';
 import TrendPage from './TrendPage';
 
 // 运动类型稳定调色板（保证同一类型始终同色；占比环形图用彩色区分类别）
@@ -85,7 +85,7 @@ const heatColor = (min: number, max: number): string | undefined => {
   if (r < 0.25) return '#DBEAFE';
   if (r < 0.5) return '#BFDBFE';
   if (r < 0.75) return '#93C5FD';
-  return '#3B82F6';
+  return '#93C5FD';
 };
 
 type Segment = 'day' | 'week' | 'month' | 'year';
@@ -182,6 +182,8 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const [exSlot, setExSlot] = useState<ExerciseRecord['timeOfDay'] | ''>('');
   const [exKcal, setExKcal] = useState('');
   const [estimatingEx, setEstimatingEx] = useState(false);
+  const [exTypeManager, setExTypeManager] = useState(false);
+  const [newTypeInput, setNewTypeInput] = useState('');
 
   const [distMode, setDistMode] = useState<'type' | 'slot'>('type');
   const [trendVisible, setTrendVisible] = useState(false);
@@ -479,6 +481,13 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
     const heat = !isThisMonth ? undefined : heatColor(dur, monthMaxMin);
+    // 按类型聚合时长（同类型多条合并显示）
+    const typeMap = new Map<string, number>();
+    exercises.forEach((e) => {
+      const t = e.type || '其他';
+      typeMap.set(t, (typeMap.get(t) || 0) + (e.durationMin || 0));
+    });
+    const typeEntries = Array.from(typeMap.entries());
     return (
       <TouchableOpacity
         key={s}
@@ -494,7 +503,28 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         <Text style={[styles.cellNum, !isThisMonth && styles.cellNumDim, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>
           {d.getDate()}
         </Text>
-        {dur > 0 && <Text style={[styles.cellDur, isSel && styles.cellNumSel]}>{fmtDur(dur)}</Text>}
+        {typeEntries.length > 0 && (
+          <View style={styles.cellExList}>
+            {typeEntries.slice(0, 3).map(([type, min], i) => (
+              <Text
+                key={type}
+                style={[
+                  styles.cellExItem,
+                  isSel && styles.cellExItemSel,
+                  { color: isSel ? '#fff' : TYPE_PALETTE[i % TYPE_PALETTE.length] },
+                ]}
+                numberOfLines={1}
+              >
+                {type} {fmtDur(min)}
+              </Text>
+            ))}
+            {typeEntries.length > 3 && (
+              <Text style={[styles.cellExMore, isSel && styles.cellExItemSel]}>
+                +{typeEntries.length - 3}
+              </Text>
+            )}
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -506,6 +536,13 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const exercises = allActivity[s]?.exercises || [];
     const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
     const heat = heatColor(dur, weekMaxMin);
+    // 按类型聚合
+    const typeMap = new Map<string, number>();
+    exercises.forEach((e) => {
+      const t = e.type || '其他';
+      typeMap.set(t, (typeMap.get(t) || 0) + (e.durationMin || 0));
+    });
+    const typeEntries = Array.from(typeMap.entries());
     return (
       <TouchableOpacity
         key={s}
@@ -514,7 +551,22 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
       >
         <Text style={styles.wkWeekday}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
         <Text style={[styles.wkNum, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>{d.getDate()}</Text>
-        {dur > 0 && <Text style={[styles.wkDur, isSel && styles.cellNumSel]}>{fmtDur(dur)}</Text>}
+        {typeEntries.length > 0 && (
+          <View style={styles.wkExList}>
+            {typeEntries.slice(0, 3).map(([type, min], i) => (
+              <Text
+                key={type}
+                style={[styles.wkExItem, { color: TYPE_PALETTE[i % TYPE_PALETTE.length] }]}
+                numberOfLines={1}
+              >
+                {type} {fmtDur(min)}
+              </Text>
+            ))}
+            {typeEntries.length > 3 && (
+              <Text style={styles.wkExMore}>+{typeEntries.length - 3}</Text>
+            )}
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -717,6 +769,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                     <View key={r.type} style={styles.legendRow}>
                       <View style={[styles.legendDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
                       <Text style={styles.legendName}>{r.type}</Text>
+                      <Text style={styles.legendTime}>{fmtDur(r.min)}</Text>
                       <Text style={styles.legendPct}>{r.pct}%</Text>
                     </View>
                   ))}
@@ -848,6 +901,50 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                     </TouchableOpacity>
                   ))}
                 </View>
+                <TouchableOpacity style={styles.exManageBtn} onPress={() => setExTypeManager((v) => !v)}>
+                  <Ionicons name="options-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.exManageBtnText}>{exTypeManager ? '收起' : '管理运动类型'}</Text>
+                </TouchableOpacity>
+                {exTypeManager && (
+                  <View style={styles.exManagerBox}>
+                    {exTypes.map((t) => (
+                      <View key={t} style={styles.exTypeManageRow}>
+                        <Text style={styles.exTypeManageText}>{t}</Text>
+                        <TouchableOpacity
+                          onPress={async () => {
+                            const next = await removeExerciseType(t);
+                            setExTypes(next);
+                            if (!next.includes(exType)) setExType(next[0] || '');
+                          }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={COLORS.danger || '#EF4444'} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                    <View style={styles.exAddTypeRow}>
+                      <TextInput
+                        style={styles.inputBox}
+                        placeholder="新增类型，如：跳绳"
+                        placeholderTextColor={COLORS.textLighter}
+                        value={newTypeInput}
+                        onChangeText={setNewTypeInput}
+                        returnKeyType="done"
+                        blurOnSubmit
+                      />
+                      <TouchableOpacity
+                        style={styles.exAddTypeBtn}
+                        onPress={async () => {
+                          const next = await addExerciseType(newTypeInput);
+                          setExTypes(next);
+                          setNewTypeInput('');
+                          setExTypeManager(false);
+                        }}
+                      >
+                        <Text style={styles.exAddTypeBtnText}>添加</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
                 {exType === '其他' && (
                   <>
                     <Text style={styles.sheetLabel}>自定义运动名称</Text>
@@ -940,17 +1037,20 @@ const styles = StyleSheet.create({
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 12, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8 },
   cell: {
-    width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
-    borderRadius: 10, paddingTop: 2, paddingHorizontal: 2, marginBottom: 2,
+    width: '14.28%', aspectRatio: 0.82, alignItems: 'center', justifyContent: 'flex-start',
+    borderRadius: 10, paddingTop: 3, paddingHorizontal: 2, marginBottom: 2,
   },
   cellOtherMonth: { opacity: 0.4 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
   cellSelected: { backgroundColor: COLORS.primary, borderWidth: 1.5, borderColor: COLORS.primary },
-  cellNum: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
+  cellNum: { fontSize: 13, color: COLORS.text, fontWeight: '600' },
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
-  cellDur: { fontSize: 10, color: COLORS.textLight, fontWeight: '600', marginTop: 1 },
+  cellExList: { alignItems: 'center', marginTop: 1 },
+  cellExItem: { fontSize: 9, fontWeight: '600', lineHeight: 13 },
+  cellExItemSel: { color: '#fff' },
+  cellExMore: { fontSize: 8, color: '#fff', lineHeight: 12 },
 
   weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4 },
   wkCell: {
@@ -959,7 +1059,9 @@ const styles = StyleSheet.create({
   },
   wkWeekday: { fontSize: 11, color: COLORS.textLight },
   wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 2 },
-  wkDur: { fontSize: 10, color: COLORS.textLight, fontWeight: '600' },
+  wkExList: { alignItems: 'center', marginTop: 2 },
+  wkExItem: { fontSize: 10, fontWeight: '600', lineHeight: 14 },
+  wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13 },
 
   yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 6, alignItems: 'flex-end', height: 200 },
   yearCol: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },
@@ -1013,6 +1115,14 @@ const styles = StyleSheet.create({
   exTypeChipActive: { backgroundColor: COLORS.secondary, borderColor: COLORS.primary },
   exTypeChipText: { fontSize: 13, color: COLORS.text },
   exTypeChipTextActive: { color: COLORS.primary, fontWeight: '600' },
+  exManageBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
+  exManageBtnText: { color: COLORS.primary, fontSize: 12.5, fontWeight: '600' },
+  exManagerBox: { marginTop: 8, padding: 10, backgroundColor: COLORS.background, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border },
+  exTypeManageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  exTypeManageText: { fontSize: 14, color: COLORS.text },
+  exAddTypeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  exAddTypeBtn: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 10, backgroundColor: COLORS.primary },
+  exAddTypeBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   slotRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   slotChip: {
     paddingVertical: 7, paddingHorizontal: 16, borderRadius: 14,
@@ -1073,6 +1183,7 @@ const styles = StyleSheet.create({
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendName: { flex: 1, fontSize: 13, color: COLORS.text, fontWeight: '500' },
+  legendTime: { fontSize: 13, fontWeight: '600', color: COLORS.primary, marginRight: 6 },
   legendPct: { fontSize: 13, fontWeight: '600', color: COLORS.textLight },
 
   typeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },

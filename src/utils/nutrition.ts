@@ -125,7 +125,7 @@ export const NUTRITION_TARGETS = {
   water: 1500, // ml
 };
 
-const MEAL_LABEL: Record<MealType, string> = {
+export const MEAL_LABEL: Record<MealType, string> = {
   breakfast: '早餐',
   lunch: '午餐',
   dinner: '晚餐',
@@ -495,39 +495,53 @@ const estimateInParallel = async (
   onEach?: (done: number, total: number) => void,
   ctx?: MealContext,
   cfg?: ModelConfig,
-): Promise<Map<string, MealNutrition>> => {
-  const out = new Map<string, MealNutrition>();
+): Promise<{ results: Map<string, MealNutrition>; failures: Map<string, { status: string; message?: string }> }> => {
+  const results = new Map<string, MealNutrition>();
+  const failures = new Map<string, { status: string; message?: string }>();
   let done = 0;
   let cursor = 0;
 
   const worker = async () => {
     while (cursor < targets.length) {
       const e = targets[cursor++];
-      const { result } = await estimateMealNutrition(e, ctx, cfg);
-      if (result) out.set(e.id, result);
+      const { result, status, message } = await estimateMealNutrition(e, ctx, cfg);
+      if (result) results.set(e.id, result);
+      else failures.set(e.id, { status: status || 'error', message });
       done += 1;
       onEach?.(done, targets.length);
     }
   };
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker));
-  return out;
+  return { results, failures };
 };
 
-// 估算某天全部餐（并发调用，写入每条记录），返回最新记录列表
+// 估算某天全部餐（并发调用，写入每条记录）。
+// 任一一餐失败（限流/网络/模型返回空）会被静默丢弃的问题已修复：
+// 这里会统计成功/失败数，并对失败项再重试一轮，最后把失败餐列表返回给调用方弹提示。
 export const estimateDayMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
   ctx?: MealContext,
   cfg?: ModelConfig,
-): Promise<MealEntry[]> => {
+): Promise<{ entries: MealEntry[]; success: number; total: number; failedMeals: MealEntry[] }> => {
   const valid = entries.filter((e) => e.content && e.content.trim());
-  const results = await estimateInParallel(valid, onEach, ctx, cfg);
+  const total = valid.length;
+  // 第一轮并发估算
+  let { results, failures } = await estimateInParallel(valid, onEach, ctx, cfg);
+  // 失败项多为偶发（限流/网络抖动），再重试一轮，尽量一次点完
+  if (failures.size > 0) {
+    const retryTargets = valid.filter((e) => failures.has(e.id));
+    const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
+    round2.results.forEach((v, k) => results.set(k, v));
+    round2.failures.forEach((v, k) => failures.set(k, v));
+  }
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
   await saveMeals(next);
-  return next;
+  const failedMeals = valid.filter((e) => failures.has(e.id));
+  return { entries: next, success: results.size, total, failedMeals };
 };
 
 // 批量估算「缺营养」的餐（用于统计中心一键补全）。返回成功估算的餐数。
@@ -538,7 +552,7 @@ export const estimateMissingMeals = async (
   cfg?: ModelConfig,
 ): Promise<number> => {
   const missing = entries.filter((m) => m.content && m.content.trim() && !m.nutrition);
-  const results = await estimateInParallel(missing, onEach, ctx, cfg);
+  const { results } = await estimateInParallel(missing, onEach, ctx, cfg);
   if (results.size === 0) return 0;
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));

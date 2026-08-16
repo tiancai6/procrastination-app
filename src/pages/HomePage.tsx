@@ -8,11 +8,12 @@ import TimerCard from '../components/TimerCard';
 import StatCard from '../components/StatCard';
 import LedgerQuickSheet from '../components/LedgerQuickSheet';
 import MealQuickSheet from '../components/MealQuickSheet';
+import NutritionDetail from '../components/NutritionDetail';
 import { useSessionStore } from '../store/sessionStore';
 import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import { getTodayExpense, getTodayIncome, getMonthExpense, formatMoney } from '../utils/ledger';
-import { getMealsByDate, getNutritionForDate, estimateDayMeals, NUTRITION_TARGETS } from '../utils/nutrition';
+import { getMealsByDate, getNutritionForDate, estimateDayMeals, MEAL_LABEL, NUTRITION_TARGETS } from '../utils/nutrition';
 import { pickBodyImage, ocrBodyComposition } from '../utils/bodyOcr';
 import {
   getApiKey,
@@ -151,10 +152,19 @@ const HomePage: React.FC = () => {
       return;
     }
     setEstimating(true);
-    await estimateDayMeals(todayMeals);
+    const { success, total, failedMeals } = await estimateDayMeals(todayMeals);
     setEstimating(false);
     await loadMeals();
     emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
+    if (failedMeals.length > 0) {
+      const names = failedMeals.map((m) => MEAL_LABEL[m.type] || '一餐').join('、');
+      Alert.alert(
+        `估算完成 ${success}/${total}`,
+        `有 ${failedMeals.length} 餐没估上（${names}）。常见原因：接口限流或网络被拦。可再点一次「AI 估算今日营养」重试。`,
+      );
+    } else if (total > 0) {
+      Alert.alert('估算完成', `已为今天 ${success} 餐估算营养`);
+    }
   };
 
   // —— 运动量 / TDEE ——
@@ -464,23 +474,14 @@ const HomePage: React.FC = () => {
                   <View style={styles.mealDetailHead}>
                     <Ionicons name={MEAL_META[tp].icon as any} size={14} color="#15803D" />
                     <Text style={styles.mealDetailLabel}>{MEAL_META[tp].label}</Text>
-                    {ms[0].nutrition && (
-                      <Text style={styles.mealDetailNut}>
-                        蛋白{Math.round(ms[0].nutrition.protein)}g·热量{Math.round(ms[0].nutrition.calories)}kcal
-                      </Text>
-                    )}
                   </View>
                   {ms.map((m) => (
                     <View key={m.id}>
                       <Text style={styles.mealDetailContent}>{m.content}</Text>
-                      {m.nutrition?.items && m.nutrition.items.length > 0 && (
-                        <View style={styles.mealItems}>
-                          {m.nutrition.items.map((it, i) => (
-                            <Text key={i} style={styles.mealItemText}>
-                              · {it.name}（蛋白{Math.round(it.protein)}g / 热量{Math.round(it.calories)}kcal）
-                            </Text>
-                          ))}
-                        </View>
+                      {m.nutrition ? (
+                        <NutritionDetail nutrition={m.nutrition} />
+                      ) : (
+                        <Text style={styles.mealDetailNoNut}>尚未 AI 估算，点下方「AI 估算今日营养」生成明细</Text>
                       )}
                     </View>
                   ))}
@@ -771,6 +772,50 @@ const HomePage: React.FC = () => {
                     </TouchableOpacity>
                   ))}
                 </View>
+                <TouchableOpacity style={styles.exManageBtn} onPress={() => setExTypeManager((v) => !v)}>
+                  <Ionicons name="options-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.exManageBtnText}>{exTypeManager ? '收起' : '管理运动类型'}</Text>
+                </TouchableOpacity>
+                {exTypeManager && (
+                  <View style={styles.exManagerBox}>
+                    {exTypes.map((t) => (
+                      <View key={t} style={styles.exTypeManageRow}>
+                        <Text style={styles.exTypeManageText}>{t}</Text>
+                        <TouchableOpacity
+                          onPress={async () => {
+                            const next = await removeExerciseType(t);
+                            setExTypes(next);
+                            if (!next.includes(exType)) setExType(next[0] || '');
+                          }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={COLORS.danger || '#EF4444'} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                    <View style={styles.exAddTypeRow}>
+                      <TextInput
+                        style={styles.inputBox}
+                        placeholder="新增类型，如：跳绳"
+                        placeholderTextColor="#94A3B8"
+                        value={newTypeInput}
+                        onChangeText={setNewTypeInput}
+                        returnKeyType="done"
+                        blurOnSubmit
+                      />
+                      <TouchableOpacity
+                        style={styles.exAddTypeBtn}
+                        onPress={async () => {
+                          const next = await addExerciseType(newTypeInput);
+                          setExTypes(next);
+                          setNewTypeInput('');
+                          setExTypeManager(false);
+                        }}
+                      >
+                        <Text style={styles.exAddTypeBtnText}>添加</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
                 {exType === '其他' && (
                   <>
                     <Text style={styles.sheetLabel}>自定义运动名称</Text>
@@ -1108,17 +1153,8 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     lineHeight: 19,
   },
-  mealDetailNut: {
-    marginLeft: 'auto',
-    fontSize: 11.5,
-    color: '#15803D',
-    fontWeight: '600',
-  },
-  mealItems: {
-    marginTop: 4,
-    paddingLeft: 4,
-  },
-  mealItemText: {
+  mealDetailNoNut: {
+    marginTop: 6,
     fontSize: 12,
     color: COLORS.textLight,
     lineHeight: 18,
