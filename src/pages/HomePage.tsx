@@ -13,7 +13,7 @@ import { useSessionStore } from '../store/sessionStore';
 import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import { getTodayExpense, getTodayIncome, getMonthExpense, formatMoney } from '../utils/ledger';
-import { getMealsByDate, getNutritionForDate, estimateDayMeals, MEAL_LABEL, NUTRITION_TARGETS } from '../utils/nutrition';
+import { getMealsByDate, getNutritionForDate, estimateDayMeals, MEAL_LABEL, NUTRITION_TARGETS, MealContext } from '../utils/nutrition';
 import { pickBodyImage, ocrBodyComposition } from '../utils/bodyOcr';
 import {
   getApiKey,
@@ -152,7 +152,15 @@ const HomePage: React.FC = () => {
       return;
     }
     setEstimating(true);
-    const { success, total, failedMeals } = await estimateDayMeals(todayMeals);
+    // 用首页已有的今日活动量/身体信息构造 ctx，让运动记录对首页这条估算路径也可见（与三餐页 buildMealContext 一致）
+    const ctx: MealContext = {
+      bmr: dayEnergy.bmr,
+      weight: bodyProfile?.weight ?? 0,
+      tdee: dayEnergy.tdee,
+      exerciseKcal: dayEnergy.exerciseKcal,
+      baseLevel: dayEnergy.baseLevel,
+    };
+    const { success, total, failedMeals } = await estimateDayMeals(todayMeals, undefined, ctx);
     setEstimating(false);
     await loadMeals();
     emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
