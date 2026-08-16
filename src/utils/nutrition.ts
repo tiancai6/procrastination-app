@@ -449,6 +449,22 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
         : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 1000, forceSearch: needSearch });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
+      // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
+      // 这种情况以前会被当成「成功」静默入库，用户看到的就是「无报错但不出结果」。
+      // 这里显式判定为失败并给出可操作的提示，方便定位是模型标识填错还是接口/网关问题。
+      const isEmpty =
+        (!parsed.items || parsed.items.length === 0) &&
+        parsed.calories === 0 &&
+        parsed.protein === 0 &&
+        parsed.carbs === 0 &&
+        parsed.fat === 0 &&
+        parsed.fiber === 0;
+      if (isEmpty) {
+        console.error('[Nutrition] 模型返回了空的营养数据', String(content).slice(0, 600));
+        throw new Error(
+          '模型返回了空的营养数据（热量/蛋白等全为 0）。常见原因：①默认模型的「模型标识」填错或该接口不支持此任务；②请求被网关/GFW 拦截（国内网络访问海外模型常见）；③该模型无法按 JSON 格式返回。请到「我的 → 管理 AI 模型」检查默认模型与接口，或换一个模型再试。',
+        );
+      }
       // 用食物库的准确数值（已换算）覆盖 AI 对已知食物的估算，保证「已记录食物」的热量一定准确
       applyKnownFoods(parsed, known);
       // 实际是否联网：火山走 Responses 通道、其余支持 web_search 的品牌走 chat/completions

@@ -13,6 +13,7 @@ import {
   Alert,
   Image,
   BackHandler,
+  Share,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -381,6 +382,29 @@ const QuickMemoPage: React.FC = () => {
     await loadMemos();
   };
 
+  // 分享某条随手记到微信（通过系统分享面板，需本机已安装微信）。
+  // 文字 + 图片一起发：iOS 系统分享面板原生支持「文字 + 单张图」；多图时先发文字+首图，
+  // 其余图片可再次点分享逐张发送（RN 原生分享单次只带一张图）。
+  const shareMemo = async (memo: QuickMemo) => {
+    const text = (memo.content || '').trim();
+    const images = memo.media.filter((m) => m.type === 'image').map((m) => getMemoMediaUri(memo.id, m.file));
+    try {
+      if (images.length === 0) {
+        await Share.share({ message: text || '随手记', title: '随手记' });
+      } else {
+        // iOS：message 作为正文、url 作为附件，微信会一并带上
+        await Share.share({ message: text, url: images[0], title: '随手记' });
+      }
+    } catch (e: any) {
+      // 用户取消分享（iOS: User did not share / Android: E_MAIL）属正常，不提示
+      const canceled = e?.message === 'User did not share' || e?.name === 'E_MAIL' || e?.code === 'E_MAIL';
+      if (!canceled) {
+        console.error('[QuickMemo] share failed', e);
+        Alert.alert('分享失败', '请确认已安装微信，或通过系统分享面板选择微信后再试');
+      }
+    }
+  };
+
   // ---------- 日期选择器 ----------
   const openDatePicker = (target: 'reminder' | 'customStart' | 'customEnd' | 'memoDate', initial?: Date) => {
     setDateTarget(target);
@@ -540,6 +564,9 @@ const QuickMemoPage: React.FC = () => {
           </View>
         )}
         <View style={styles.cardActions}>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => shareMemo(item)}>
+            <Ionicons name="share-outline" size={16} color={COLORS.primary} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={() => togglePin(item)}>
             <Ionicons name={item.pinned ? 'bookmark' : 'bookmark-outline'} size={16} color={item.pinned ? COLORS.primary : COLORS.textLight} />
           </TouchableOpacity>

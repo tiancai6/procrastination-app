@@ -7,6 +7,8 @@ import {
   TextInput,
   ScrollView,
   Alert,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { Svg, Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,7 +30,7 @@ import {
   BodyProfileSnapshot,
 } from '../utils/storage';
 import { Habit, HabitCheckin } from '../types';
-import { getExerciseTypes, DEFAULT_EXERCISE_TYPES } from '../utils/activity';
+import { getExerciseTypes, DEFAULT_EXERCISE_TYPES, estimateExerciseKcal } from '../utils/activity';
 import TrendPage from './TrendPage';
 
 // 运动类型稳定调色板（保证同一类型始终同色；占比环形图用彩色区分类别）
@@ -178,9 +180,12 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   const [exCustom, setExCustom] = useState('');
   const [exPlan, setExPlan] = useState('');
   const [exSlot, setExSlot] = useState<ExerciseRecord['timeOfDay'] | ''>('');
+  const [exKcal, setExKcal] = useState('');
+  const [estimatingEx, setEstimatingEx] = useState(false);
 
   const [distMode, setDistMode] = useState<'type' | 'slot'>('type');
   const [trendVisible, setTrendVisible] = useState(false);
+  const [dayModalVisible, setDayModalVisible] = useState(false);
 
   const loadAll = async () => {
     const [all, types, hb, ck, b] = await Promise.all([
@@ -365,11 +370,13 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     setExCustom('');
     setExPlan('');
     setExSlot('');
+    setExKcal('');
   };
 
   const openDay = (s: string) => {
     setSelected(s);
     resetForm();
+    setDayModalVisible(true);
   };
 
   const startEdit = (e: ExerciseRecord) => {
@@ -380,6 +387,24 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     setExCustom('');
     setExPlan(e.plan || '');
     setExSlot(e.timeOfDay || '');
+    setExKcal(e.kcal ? String(e.kcal) : '');
+  };
+
+  const estimateEx = async () => {
+    const d = parseInt(exDuration, 10);
+    if (!d || d <= 0) {
+      Alert.alert('提示', '请先填写有效的时长（分钟）');
+      return;
+    }
+    setEstimatingEx(true);
+    try {
+      const finalType = exType === '其他' && exCustom.trim() ? exCustom.trim() : exType;
+      const kcal = await estimateExerciseKcal(`${finalType} ${d}分钟`);
+      if (kcal) setExKcal(String(kcal));
+      else Alert.alert('估算失败', '请检查网络或手动填写消耗');
+    } finally {
+      setEstimatingEx(false);
+    }
   };
 
   const handleSave = async () => {
@@ -406,6 +431,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
             ...e,
             type: finalType,
             durationMin: dur,
+            kcal: exKcal ? parseInt(exKcal, 10) : undefined,
             note: exNote.trim() || undefined,
             plan: exPlan.trim() || undefined,
             timeOfDay: exSlot ? exSlot : undefined,
@@ -419,6 +445,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           id: generateId(),
           type: finalType,
           durationMin: dur,
+          kcal: exKcal ? parseInt(exKcal, 10) : undefined,
           note: exNote.trim() || undefined,
           plan: exPlan.trim() || undefined,
           timeOfDay: exSlot ? exSlot : undefined,
@@ -604,116 +631,44 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           点任意日期查看 / 补记当天运动；颜色越深代表当天练得越久（热力图）。
         </Text>
 
-        {/* —— 选中日期详情面板（常驻下方） —— */}
-        <View style={styles.detailPanel}>
-          <View style={styles.detailHead}>
-            <Ionicons name="barbell-outline" size={16} color={COLORS.primary} />
-            <Text style={styles.detailTitle}>
-              {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日 {WEEK_LABELS[selectedDate.getDay()]}
-              {selected === todayStr ? ' · 今天' : ''}
-            </Text>
-          </View>
-
-          {dayExercises.length === 0 ? (
-            <Text style={styles.emptyText}>这一天还没有运动记录</Text>
-          ) : (
-            <>
-              <View style={styles.daySummary}>
-                <Text style={styles.daySummaryText}>
+        {/* —— 日视图：紧凑摘要行（点击弹出详情 Modal） —— */}
+        {segment === 'day' && (
+          <TouchableOpacity
+            style={styles.dayCompact}
+            onPress={() => setDayModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.dayCompactHead}>
+              <Ionicons name="barbell-outline" size={16} color={COLORS.primary} />
+              <Text style={styles.dayCompactTitle}>
+                {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日 {WEEK_LABELS[selectedDate.getDay()]}
+                {selected === todayStr ? ' · 今天' : ''}
+              </Text>
+            </View>
+            {dayExercises.length === 0 ? (
+              <Text style={styles.dayCompactEmpty}>点击添加运动记录</Text>
+            ) : (
+              <>
+                <Text style={styles.dayCompactSummary}>
                   共 {dayExercises.length} 项 · 总时长 {fmtDur(dayExercises.reduce((s, e) => s + (e.durationMin || 0), 0))}
                 </Text>
-              </View>
-              {dayExercises.map((e) => {
-                const slotLabel = e.timeOfDay ? TIME_SLOTS.find((s) => s.key === e.timeOfDay)?.label : '';
-                return (
-                  <View key={e.id} style={[styles.exItem, editing?.id === e.id && styles.exItemEditing]}>
-                    <View style={[styles.exDot, { backgroundColor: TYPE_PALETTE[TYPE_PALETTE.indexOf(TYPE_PALETTE[0])] }]} />
-                    <View style={styles.exBody}>
-                      <Text style={styles.exItemName}>
-                        {e.type}
-                        {slotLabel ? <Text style={styles.exItemSlot}> · {slotLabel}</Text> : null}
-                      </Text>
-                      <Text style={styles.exItemSub}>时长 {fmtDur(e.durationMin)}{e.note ? ` · ${e.note}` : ''}</Text>
-                      {e.plan ? <Text style={styles.exItemPlan}>计划：{e.plan}</Text> : null}
-                    </View>
-                    <TouchableOpacity style={styles.exAction} onPress={() => startEdit(e)}>
-                      <Ionicons name="create-outline" size={18} color={COLORS.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.exAction} onPress={() => handleDelete(e.id)}>
-                      <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
-                    </TouchableOpacity>
-                  </View>
-                );
-              })}
-            </>
-          )}
-
-          {/* 联动：运动类习惯补打卡 */}
-          {pendingSportHabits.length > 0 && (
-            <View style={styles.checkinBox}>
-              <Text style={styles.checkinTitle}>习惯补打卡</Text>
-              {pendingSportHabits.map((h) => (
-                <TouchableOpacity
-                  key={h.id}
-                  style={[styles.checkinBtn, { borderColor: h.color || COLORS.primary }]}
-                  onPress={() => handleCheckin(h.id)}
-                >
-                  <Ionicons name="checkmark-circle-outline" size={16} color={h.color || COLORS.primary} />
-                  <Text style={[styles.checkinText, { color: h.color || COLORS.primary }]}>补打卡：{h.name}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-
-          {/* 添加 / 修改运动 */}
-          <View style={styles.addBox}>
-            <Text style={styles.sheetLabel}>{editing ? `修改「${editing.type}」` : '添加运动（补记任意一天）'}</Text>
-            <View style={styles.exTypeRow}>
-              {exTypes.map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
-                  onPress={() => setExType(t)}
-                >
-                  <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {exType === '其他' && (
-              <>
-                <Text style={styles.sheetLabel}>自定义运动名称</Text>
-                <TextInput style={styles.inputBox} placeholder="例如：爬楼梯 / 椭圆机" placeholderTextColor={COLORS.textLighter} value={exCustom} onChangeText={setExCustom} returnKeyType="done" blurOnSubmit />
+                <View style={styles.dayCompactRow}>
+                  {dayExercises.map((e) => {
+                    const slotLabel = e.timeOfDay ? TIME_SLOTS.find((s) => s.key === e.timeOfDay)?.label : '';
+                    return (
+                      <View key={e.id} style={styles.dayCompactChip}>
+                        <Text style={styles.dayCompactChipText} numberOfLines={1}>
+                          {e.type} {fmtDur(e.durationMin)}{slotLabel ? ` ${slotLabel}` : ''}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
               </>
             )}
-            <Text style={styles.sheetLabel}>时长（分钟）</Text>
-            <TextInput style={styles.inputBox} keyboardType="numeric" placeholder="如 45" placeholderTextColor={COLORS.textLighter} value={exDuration} onChangeText={setExDuration} returnKeyType="done" blurOnSubmit />
-            <Text style={styles.sheetLabel}>训练时段（可选）</Text>
-            <View style={styles.slotRow}>
-              {TIME_SLOTS.map((s) => (
-                <TouchableOpacity
-                  key={s.key}
-                  style={[styles.slotChip, exSlot === s.key && styles.slotChipActive]}
-                  onPress={() => setExSlot(exSlot === s.key ? '' : s.key)}
-                >
-                  <Text style={[styles.slotChipText, exSlot === s.key && styles.slotChipTextActive]}>{s.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>训练计划（具体练了什么，可选）</Text>
-            <TextInput style={styles.inputBox} placeholder="如：胸+三头推举 4 组、深蹲 5×5" placeholderTextColor={COLORS.textLighter} value={exPlan} onChangeText={setExPlan} returnKeyType="done" blurOnSubmit />
-            <Text style={styles.sheetLabel}>备注（可选）</Text>
-            <TextInput style={styles.inputBox} placeholder="如：力量+有氧" placeholderTextColor={COLORS.textLighter} value={exNote} onChangeText={setExNote} returnKeyType="done" blurOnSubmit />
-            <TouchableOpacity style={styles.addBtn} onPress={handleSave}>
-              <Ionicons name={editing ? 'checkmark-circle-outline' : 'add-circle-outline'} size={16} color="#fff" />
-              <Text style={styles.addBtnText}>{editing ? '更新这条记录' : '保存到这一天'}</Text>
-            </TouchableOpacity>
-            {editing && (
-              <TouchableOpacity style={styles.cancelEditBtn} onPress={resetForm}>
-                <Text style={styles.cancelEditText}>取消修改</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
+            <Ionicons name="chevron-forward" size={16} color={COLORS.textLight} />
+          </TouchableOpacity>
+        )}
 
         {/* —— 区间统计 —— */}
         <View style={styles.statBar}>
@@ -805,6 +760,143 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
 
         <View style={{ height: 90 }} />
       </ScrollView>
+
+      {/* —— 日期详情 Modal（日/月/周/年 点击日期后弹出） —— */}
+      <Modal visible={dayModalVisible} animationType="slide" transparent onRequestClose={() => setDayModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {/* Modal 头部 */}
+            <View style={styles.modalHeader}>
+              <View style={styles.modalHeadRow}>
+                <Ionicons name="barbell-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.modalTitle}>
+                  {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日 {WEEK_LABELS[selectedDate.getDay()]}
+                  {selected === todayStr ? ' · 今天' : ''}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => { setDayModalVisible(false); resetForm(); }} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={22} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+              {/* 摘要 */}
+              {dayExercises.length > 0 && (
+                <View style={styles.mDaySummary}>
+                  <Text style={styles.mDaySummaryText}>
+                    共 {dayExercises.length} 项 · 总时长 {fmtDur(dayExercises.reduce((s, e) => s + (e.durationMin || 0), 0))}
+                  </Text>
+                </View>
+              )}
+
+              {/* 运动列表 */}
+              {dayExercises.length === 0 ? (
+                <Text style={styles.mEmptyText}>这一天还没有运动记录，在下面添加吧</Text>
+              ) : (
+                dayExercises.map((e) => {
+                  const slotLabel = e.timeOfDay ? TIME_SLOTS.find((s) => s.key === e.timeOfDay)?.label : '';
+                  return (
+                    <View key={e.id} style={[styles.exItem, editing?.id === e.id && styles.exItemEditing]}>
+                      <View style={[styles.exDot, { backgroundColor: TYPE_PALETTE[TYPE_PALETTE.indexOf(TYPE_PALETTE[0])] }]} />
+                      <View style={styles.exBody}>
+                        <Text style={styles.exItemName}>
+                          {e.type}
+                          {slotLabel ? <Text style={styles.exItemSlot}> · {slotLabel}</Text> : null}
+                        </Text>
+                        <Text style={styles.exItemSub}>时长 {fmtDur(e.durationMin)}{e.note ? ` · ${e.note}` : ''}</Text>
+                        {e.plan ? <Text style={styles.exItemPlan}>计划：{e.plan}</Text> : null}
+                      </View>
+                      <TouchableOpacity style={styles.exAction} onPress={() => startEdit(e)}>
+                        <Ionicons name="create-outline" size={18} color={COLORS.primary} />
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.exAction} onPress={() => handleDelete(e.id)}>
+                        <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })
+              )}
+
+              {/* 联动：运动类习惯补打卡 */}
+              {pendingSportHabits.length > 0 && (
+                <View style={styles.checkinBox}>
+                  <Text style={styles.checkinTitle}>习惯补打卡</Text>
+                  {pendingSportHabits.map((h) => (
+                    <TouchableOpacity
+                      key={h.id}
+                      style={[styles.checkinBtn, { borderColor: h.color || COLORS.primary }]}
+                      onPress={() => handleCheckin(h.id)}
+                    >
+                      <Ionicons name="checkmark-circle-outline" size={16} color={h.color || COLORS.primary} />
+                      <Text style={[styles.checkinText, { color: h.color || COLORS.primary }]}>补打卡：{h.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {/* 添加 / 修改运动 */}
+              <View style={styles.addBox}>
+                <Text style={styles.sheetLabel}>{editing ? `修改「${editing.type}」` : '添加运动（补记任意一天）'}</Text>
+                <View style={styles.exTypeRow}>
+                  {exTypes.map((t) => (
+                    <TouchableOpacity
+                      key={t}
+                      style={[styles.exTypeChip, exType === t && styles.exTypeChipActive]}
+                      onPress={() => setExType(t)}
+                    >
+                      <Text style={[styles.exTypeChipText, exType === t && styles.exTypeChipTextActive]}>{t}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {exType === '其他' && (
+                  <>
+                    <Text style={styles.sheetLabel}>自定义运动名称</Text>
+                    <TextInput style={styles.inputBox} placeholder="例如：爬楼梯 / 椭圆机" placeholderTextColor={COLORS.textLighter} value={exCustom} onChangeText={setExCustom} returnKeyType="done" blurOnSubmit />
+                  </>
+                )}
+                <Text style={styles.sheetLabel}>时长（分钟）</Text>
+                <TextInput style={styles.inputBox} keyboardType="numeric" placeholder="如 45" placeholderTextColor={COLORS.textLighter} value={exDuration} onChangeText={setExDuration} returnKeyType="done" blurOnSubmit />
+                <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
+                  {estimatingEx ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.estimateBtnText}>AI 估算消耗</Text>
+                  )}
+                </TouchableOpacity>
+                <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
+                <TextInput style={styles.inputBox} keyboardType="numeric" placeholder="如 320" placeholderTextColor={COLORS.textLighter} value={exKcal} onChangeText={setExKcal} returnKeyType="done" blurOnSubmit />
+                <Text style={styles.sheetLabel}>训练时段（可选）</Text>
+                <View style={styles.slotRow}>
+                  {TIME_SLOTS.map((s) => (
+                    <TouchableOpacity
+                      key={s.key}
+                      style={[styles.slotChip, exSlot === s.key && styles.slotChipActive]}
+                      onPress={() => setExSlot(exSlot === s.key ? '' : s.key)}
+                    >
+                      <Text style={[styles.slotChipText, exSlot === s.key && styles.slotChipTextActive]}>{s.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.sheetLabel}>训练计划（具体练了什么，可选）</Text>
+                <TextInput style={styles.inputBox} placeholder="如：胸+三头推举 4 组、深蹲 5×5" placeholderTextColor={COLORS.textLighter} value={exPlan} onChangeText={setExPlan} returnKeyType="done" blurOnSubmit />
+                <Text style={styles.sheetLabel}>备注（可选）</Text>
+                <TextInput style={styles.inputBox} placeholder="如：力量+有氧" placeholderTextColor={COLORS.textLighter} value={exNote} onChangeText={setExNote} returnKeyType="done" blurOnSubmit />
+                <TouchableOpacity style={styles.addBtn} onPress={handleSave}>
+                  <Ionicons name={editing ? 'checkmark-circle-outline' : 'add-circle-outline'} size={16} color="#fff" />
+                  <Text style={styles.addBtnText}>{editing ? '更新这条记录' : '保存到这一天'}</Text>
+                </TouchableOpacity>
+                {editing && (
+                  <TouchableOpacity style={styles.cancelEditBtn} onPress={resetForm}>
+                    <Text style={styles.cancelEditText}>取消修改</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <View style={{ height: 40 }} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <TrendPage visible={trendVisible} onClose={() => setTrendVisible(false)} />
     </View>
@@ -938,6 +1030,12 @@ const styles = StyleSheet.create({
     paddingVertical: 13, borderRadius: 14, backgroundColor: COLORS.primary,
   },
   addBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  estimateBtn: {
+    marginTop: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 11, borderRadius: 14, backgroundColor: COLORS.primary,
+  },
+  estimateBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   cancelEditBtn: {
     marginTop: 8, alignItems: 'center', paddingVertical: 9, borderRadius: 12,
     borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.background,
@@ -991,6 +1089,45 @@ const styles = StyleSheet.create({
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
   bottomBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+
+  // —— 日视图紧凑摘要行 ——
+  dayCompact: {
+    backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 4, borderRadius: 16, padding: 14,
+    shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
+  },
+  dayCompactHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  dayCompactTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text },
+  dayCompactEmpty: { fontSize: 13, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 4 },
+  dayCompactSummary: { fontSize: 13, fontWeight: '600', color: COLORS.primary, marginBottom: 8 },
+  dayCompactRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  dayCompactChip: {
+    backgroundColor: COLORS.secondary, borderRadius: 10, paddingVertical: 5, paddingHorizontal: 10,
+    borderWidth: 1, borderColor: COLORS.primaryLight,
+  },
+  dayCompactChipText: { fontSize: 12, fontWeight: '600', color: COLORS.text },
+
+  // —— 日期详情 Modal ——
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    maxHeight: '88%', shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 18, paddingTop: 20, paddingBottom: 12, borderBottomWidth: 0.5, borderBottomColor: COLORS.border,
+  },
+  modalHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 },
+  modalTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  modalCloseBtn: { padding: 4 },
+  modalScroll: { paddingHorizontal: 18 },
+  mDaySummary: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 10, marginTop: 6, marginBottom: 2,
+    borderRadius: 10, backgroundColor: COLORS.secondary, paddingHorizontal: 12,
+  },
+  mDaySummaryText: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
+  mEmptyText: { fontSize: 13, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 20 },
 });
 
 export default ExerciseCalendarPage;

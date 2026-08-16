@@ -36,6 +36,43 @@ interface FormState {
 }
 const EMPTY: FormState = { name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '', ingredientText: '', labelBaseUnit: '', inputUnit: '' };
 
+// 粘贴包装文字 → AI 解析成食物的提示词。要求 AI 返回「每 100g」营养 + 这份的份量，
+// 由本页按份量换算成「整份」营养再预填，用户可再次核对。
+const TEXT_RECOGNITION_PROMPT = `你是营养师。用户会粘贴一段食品包装 / 营养成分文字（可能含份量、每100g 营养、钠等）。
+请解析并严格返回如下 JSON（不要输出任何 JSON 以外的文字）：
+{
+  "name": "食物名(不含分量)",
+  "portionCount": 数字,
+  "portionUnit": "条/包/瓶/袋/份",
+  "portionGrams": 数字,
+  "baseUnit": "100g",
+  "per100": {
+    "calories": 数字,
+    "protein": 数字,
+    "fat": 数字,
+    "carbs": 数字,
+    "fiber": 数字,
+    "sodium": 数字
+  }
+}
+要求：
+1. portionGrams 优先用原文给出的这整份克数（如「20g」「1条(20g)」）；没有就按常见份量估算并填到 portionGrams。
+2. per100 必须是「每 100g」的营养；若原文给的是「每份20g」的数值，请换算成每 100g 再填。
+3. calories 统一用 kcal（千卡）：原文是 kJ 时换算 kcal = kJ / 4.184，保留两位小数；原文本来就是 kcal 直接用。
+4. sodium 是钠（mg），没有则填 0；会记到备注里供参考，不参与热量估算。
+5. 只输出 JSON，不要解释。`;
+
+// 按 AI 解析结果拼出「食物名 + 份量」的 name（与现有食物库约定一致：name 含分量，如「优乐美茉莉花茶 1条(20g)」）
+const buildFoodName = (p: any, grams: number): string => {
+  if (!p?.name) return '';
+  const base = p.name.trim();
+  const cnt = p?.portionCount;
+  const unit = p?.portionUnit;
+  if (cnt && unit) return `${base} ${cnt}${unit}(${grams}g)`;
+  if (grams) return `${base}(${grams}g)`;
+  return base;
+};
+
 const FoodLibraryPage: React.FC = () => {
   const navigation = useNavigation<any>();
   const [list, setList] = useState<FoodItem[]>([]);
@@ -43,6 +80,8 @@ const FoodLibraryPage: React.FC = () => {
   const [editing, setEditing] = useState<FoodItem | null>(null);
   const [form, setForm] = useState(EMPTY);
   const [recognizing, setRecognizing] = useState(false); // 拍照/上传配料表识别中
+  const [freeText, setFreeText] = useState(''); // 粘贴的包装文字（AI 识别用）
+  const [aiBusy, setAiBusy] = useState(false); // AI 文字识别中
 
   const load = async () => setList(await getFoodLibrary());
   useEffect(() => {
@@ -52,10 +91,12 @@ const FoodLibraryPage: React.FC = () => {
   const openAdd = () => {
     setEditing(null);
     setForm(EMPTY);
+    setFreeText('');
     setSheetVisible(true);
   };
   const openEdit = (f: FoodItem) => {
     setEditing(f);
+    setFreeText('');
     setForm({
       name: f.name,
       calories: String(f.calories || 0),
@@ -149,6 +190,54 @@ const FoodLibraryPage: React.FC = () => {
     }
   };
 
+  // 粘贴包装文字 → 调用文本模型解析营养 → 自动预填表单（用户可手动修改确认）
+  const recognizeText = async () => {
+    const raw = freeText.trim();
+    if (!raw) return;
+    const cfg = await getActiveConfig(false);
+    if (!cfg) {
+      Alert.alert('未配置模型', '请先到「我的 → 管理 AI 模型」添加一个文本模型（如 GLM）才能用 AI 识别');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const content = await postChat(
+        cfg,
+        [
+          { role: 'system', content: TEXT_RECOGNITION_PROMPT },
+          { role: 'user', content: raw },
+        ],
+        { temperature: 0.2, maxTokens: 800 },
+      );
+      const p: any = parseJsonContent(content);
+      const per100 = p?.per100 || {};
+      const grams =
+        Number(p?.portionGrams) || parseBaseGrams(p?.portion) || parseBaseGrams(p?.name) || 100;
+      const factor = grams / 100;
+      const round1 = (v: number) => Math.round(v * 10) / 10;
+      const name = buildFoodName(p, grams);
+      setForm((f) => ({
+        ...f,
+        name: name || f.name,
+        calories: per100.calories != null ? String(round1(Number(per100.calories) * factor)) : f.calories,
+        protein: per100.protein != null ? String(round1(Number(per100.protein) * factor)) : f.protein,
+        fat: per100.fat != null ? String(round1(Number(per100.fat) * factor)) : f.fat,
+        carbs: per100.carbs != null ? String(round1(Number(per100.carbs) * factor)) : f.carbs,
+        fiber: per100.fiber != null ? String(round1(Number(per100.fiber) * factor)) : f.fiber,
+        labelBaseUnit: p?.baseUnit ? String(p.baseUnit) : '100g',
+        ingredientText:
+          (f.ingredientText || `（AI 识别原文：${raw}）`) +
+          (per100.sodium != null ? ` ｜钠 ${Number(per100.sodium)}mg/100g` : ''),
+      }));
+      Alert.alert('识别完成', '已自动预填营养数据，请核对（尤其是能量单位与份量）后再保存');
+    } catch (e: any) {
+      console.error('[FoodLibrary] text recognize failed', e);
+      Alert.alert('识别失败', e?.message ? String(e.message).slice(0, 220) : '请检查网络或模型后重试，也可手动填写');
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!form.name.trim()) {
       Alert.alert('提示', '请填写食物名称（含分量，如「米饭 1碗(约150g)」）');
@@ -238,9 +327,12 @@ const FoodLibraryPage: React.FC = () => {
 
       {/* 新增 / 修改 表单 */}
       <Modal visible={sheetVisible} transparent animationType="slide" onRequestClose={() => setSheetVisible(false)}>
-        <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setSheetVisible(false); }}>
-          <View style={styles.sheetWrap}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheet}>
+        <View style={styles.sheetWrap}>
+          {/* 遮罩：点这里只收起键盘，不再误关整个面板（关闭请用右上角 X） */}
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+            <View style={styles.sheetBackdrop} />
+          </TouchableWithoutFeedback>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheet}>
               <View style={styles.sheetHead}>
                 <Text style={styles.sheetTitle}>{editing ? '修改食物' : '新增食物'}</Text>
                 <TouchableOpacity onPress={() => { Keyboard.dismiss(); setSheetVisible(false); }}>
@@ -259,6 +351,29 @@ const FoodLibraryPage: React.FC = () => {
                 </TouchableOpacity>
               </View>
               {recognizing && <Text style={styles.recogHint}>正在识别配料表，请稍候…</Text>}
+
+              {/* 粘贴文字让 AI 识别（不发图片，纯文本模型即可） */}
+              <View style={styles.aiTextBox}>
+                <Text style={styles.label}>粘贴包装文字让 AI 识别（可选）</Text>
+                <TextInput
+                  style={[styles.input, { minHeight: 64, textAlignVertical: 'top' }]}
+                  placeholder="如：1条优乐美茉莉花茶（高钙高蛋白质，20g，每100g能量24.4，蛋白质24.4g，脂肪26.8g，碳水化合物41.6g，钠422mg）"
+                  placeholderTextColor={COLORS.textLighter}
+                  value={freeText}
+                  onChangeText={setFreeText}
+                  multiline
+                  returnKeyType="done"
+                />
+                <TouchableOpacity
+                  style={[styles.aiRecogBtn, (!freeText.trim() || aiBusy) && styles.aiRecogBtnDisabled]}
+                  onPress={recognizeText}
+                  disabled={aiBusy || !freeText.trim()}
+                >
+                  {aiBusy ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="sparkles-outline" size={15} color="#fff" />}
+                  <Text style={styles.aiRecogBtnText}>{aiBusy ? '识别中…' : '✨ AI 识别并预填'}</Text>
+                </TouchableOpacity>
+                {aiBusy && <Text style={styles.recogHint}>正在让 AI 解析营养数据…</Text>}
+              </View>
 
               <Text style={styles.label}>名称（含分量）</Text>
               <TextInput
@@ -322,7 +437,6 @@ const FoodLibraryPage: React.FC = () => {
               <View style={{ height: 16 }} />
             </KeyboardAvoidingView>
           </View>
-        </TouchableWithoutFeedback>
       </Modal>
     </View>
   );
@@ -389,7 +503,8 @@ const styles = StyleSheet.create({
   cardAction: { paddingHorizontal: 6, paddingVertical: 4 },
 
   // 表单
-  sheetWrap: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  sheetWrap: { flex: 1, justifyContent: 'flex-end' },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.45)' },
   sheet: {
     backgroundColor: COLORS.card,
     borderTopLeftRadius: 22,
@@ -398,6 +513,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 16,
+    position: 'relative',
+    zIndex: 1,
   },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
   sheetTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
@@ -414,6 +531,13 @@ const styles = StyleSheet.create({
   },
   recogBtnAltText: { color: COLORS.primary, fontSize: 14, fontWeight: '600' },
   recogHint: { fontSize: 12, color: COLORS.primary, marginTop: 6, marginBottom: 2 },
+  aiTextBox: { marginTop: 10, paddingTop: 12, borderTopWidth: 0.5, borderTopColor: COLORS.border },
+  aiRecogBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 10, paddingVertical: 11, borderRadius: 12, backgroundColor: COLORS.primary,
+  },
+  aiRecogBtnDisabled: { opacity: 0.5 },
+  aiRecogBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   unitRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
   unitItem: { flex: 1 },
   input: {

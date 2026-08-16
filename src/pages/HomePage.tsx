@@ -41,6 +41,15 @@ import TrendPage from './TrendPage';
 import ModelConfigPage from './ModelConfigPage';
 import { LedgerEntry, MealEntry, MealType, NutritionResult } from '../types';
 
+// 训练时段（5 选 1，与运动日历页一致）
+const TIME_SLOTS: { key: 'morning' | 'forenoon' | 'afternoon' | 'evening' | 'night'; label: string }[] = [
+  { key: 'morning', label: '晨' },
+  { key: 'forenoon', label: '上午' },
+  { key: 'afternoon', label: '下午' },
+  { key: 'evening', label: '晚上' },
+  { key: 'night', label: '夜' },
+];
+
 const toDateStr = (d: Date): string => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -89,6 +98,9 @@ const HomePage: React.FC = () => {
   const [exDuration, setExDuration] = useState('30');
   const [exKcal, setExKcal] = useState('');
   const [estimatingEx, setEstimatingEx] = useState(false);
+  const [exSlot, setExSlot] = useState<ExerciseRecord['timeOfDay'] | ''>('');
+  const [exPlan, setExPlan] = useState('');
+  const [exNote, setExNote] = useState('');
 
   const loadMeals = async () => {
     const t = toDateStr(new Date());
@@ -159,6 +171,9 @@ const HomePage: React.FC = () => {
     setExDuration('30');
     setExKcal('');
     setExCustom('');
+    setExSlot('');
+    setExPlan('');
+    setExNote('');
     setExModal(true);
   };
 
@@ -192,6 +207,9 @@ const HomePage: React.FC = () => {
       type: finalType,
       durationMin: d,
       kcal: exKcal ? parseInt(exKcal, 10) : undefined,
+      timeOfDay: exSlot ? exSlot : undefined,
+      plan: exPlan.trim() || undefined,
+      note: exNote.trim() || undefined,
     };
     const next = await saveExerciseRecord(t, activity, rec);
     setActivity(next);
@@ -524,15 +542,35 @@ const HomePage: React.FC = () => {
       {/* 今日活动量 & TDEE */}
       <View style={styles.activityCard}>
         <View style={styles.activityHead}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.activityTitle}>今日活动量</Text>
-            <Text style={styles.activitySub}>
-              基础代谢 {dayEnergy.bmr} · 运动 {dayEnergy.exerciseKcal} · 总消耗 {dayEnergy.tdee} kcal
-            </Text>
+          <View style={styles.activityHeadLeft}>
+            <View style={styles.activityIconWrap}>
+              <Ionicons name="barbell-outline" size={18} color="#1D4ED8" />
+            </View>
+            <View>
+              <Text style={styles.activityTitle}>今日活动量</Text>
+              <Text style={styles.activitySub}>基础代谢 · 运动 · 总消耗</Text>
+            </View>
           </View>
-          <TouchableOpacity onPress={openBodyModal}>
+          <TouchableOpacity style={styles.activityLinkBtn} onPress={openBodyModal}>
             <Text style={styles.activityLink}>身体信息</Text>
           </TouchableOpacity>
+        </View>
+
+        <View style={styles.activitySummary}>
+          <View style={styles.activitySummaryItem}>
+            <Text style={styles.activitySummaryValue}>{dayEnergy.bmr}</Text>
+            <Text style={styles.activitySummaryLabel}>基础代谢</Text>
+          </View>
+          <View style={styles.activitySummaryDivider} />
+          <View style={styles.activitySummaryItem}>
+            <Text style={styles.activitySummaryValue}>{dayEnergy.exerciseKcal}</Text>
+            <Text style={styles.activitySummaryLabel}>运动消耗</Text>
+          </View>
+          <View style={styles.activitySummaryDivider} />
+          <View style={styles.activitySummaryItem}>
+            <Text style={[styles.activitySummaryValue, styles.activitySummaryValueStrong]}>{dayEnergy.tdee}</Text>
+            <Text style={styles.activitySummaryLabel}>总消耗 kcal</Text>
+          </View>
         </View>
 
         <View style={styles.activityLevels}>
@@ -563,29 +601,30 @@ const HomePage: React.FC = () => {
         )}
 
 
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          <TouchableOpacity style={[styles.trendBtn, { flex: 1 }]} onPress={() => setTrendVisible(true)}>
-            <Ionicons name="stats-chart-outline" size={15} color={COLORS.primary} />
-            <Text style={styles.trendBtnText}>查看健身与身体趋势</Text>
+        {/* 主操作：加运动记录（参考运动页的添加运动，点开原加运动弹窗） */}
+        <TouchableOpacity style={styles.actPrimaryBtn} onPress={openExModal}>
+          <Ionicons name="add-circle-outline" size={16} color="#fff" />
+          <Text style={styles.actPrimaryText}>加运动记录</Text>
+        </TouchableOpacity>
+
+        <View style={styles.actGrid}>
+          <TouchableOpacity style={[styles.actBtn, styles.actBtnLight]} onPress={() => navigation.navigate('ExerciseCalendar')}>
+            <Ionicons name="calendar-outline" size={15} color="#1D4ED8" />
+            <Text style={[styles.actBtnText, styles.actBtnTextLight]}>运动日历</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.trendBtn, { flex: 1 }]} onPress={() => navigation.navigate('ExerciseCalendar')}>
-            <Ionicons name="calendar-outline" size={15} color={COLORS.primary} />
-            <Text style={styles.trendBtnText}>运动日历</Text>
+          <TouchableOpacity style={[styles.actBtn, styles.actBtnLight]} onPress={() => setTrendVisible(true)}>
+            <Ionicons name="stats-chart-outline" size={15} color="#1D4ED8" />
+            <Text style={[styles.actBtnText, styles.actBtnTextLight]}>查看趋势</Text>
           </TouchableOpacity>
         </View>
-        <View style={styles.activityBtnRow}>
-          <TouchableOpacity style={[styles.exAddBtn, { flex: 1 }]} onPress={openExModal}>
-            <Ionicons name="add-circle-outline" size={15} color="#fff" />
-            <Text style={styles.exAddText}>加运动记录</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.modelBtn, { flex: 1 }]} onPress={() => setShowModelCfg(true)}>
+
+        <View style={styles.actGrid}>
+          <TouchableOpacity style={[styles.actBtn, styles.actBtnCyan]} onPress={() => setShowModelCfg(true)}>
             <Ionicons name="swap-horizontal-outline" size={15} color="#fff" />
-            <Text style={styles.modelBtnText}>修改模型</Text>
+            <Text style={styles.actBtnText}>修改模型</Text>
           </TouchableOpacity>
-        </View>
-        <View style={styles.activityBtnRow}>
           <TouchableOpacity
-            style={[styles.estimateTodayBtn, { flex: 1 }, estimating && styles.mealEstimateDisabled]}
+            style={[styles.actBtn, styles.actBtnPurple, estimating && styles.mealEstimateDisabled]}
             onPress={handleEstimateMeal}
             disabled={estimating}
           >
@@ -594,7 +633,7 @@ const HomePage: React.FC = () => {
             ) : (
               <Ionicons name="sparkles-outline" size={15} color="#fff" />
             )}
-            <Text style={styles.estimateTodayText}>AI 估算今日营养</Text>
+            <Text style={styles.actBtnText}>AI 估算今日营养</Text>
           </TouchableOpacity>
         </View>
 
@@ -713,13 +752,13 @@ const HomePage: React.FC = () => {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* 加运动记录 Modal */}
+      {/* 加运动记录 Modal（与运动日历页表单一致） */}
       <Modal visible={exModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setExModal(false); }}>
         <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
           <View style={styles.sheetWrap}>
             <KeyboardAvoidingView behavior="padding" style={styles.sheet}>
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                <Text style={styles.sheetTitle}>加运动记录</Text>
+                <Text style={styles.sheetTitle}>添加运动</Text>
                 <Text style={styles.sheetLabel}>类型</Text>
                 <View style={styles.exTypeRow}>
                   {exTypes.map((t) => (
@@ -732,50 +771,6 @@ const HomePage: React.FC = () => {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <TouchableOpacity style={styles.exManageBtn} onPress={() => setExTypeManager((v) => !v)}>
-                  <Ionicons name="options-outline" size={14} color={COLORS.primary} />
-                  <Text style={styles.exManageBtnText}>{exTypeManager ? '收起' : '管理运动类型'}</Text>
-                </TouchableOpacity>
-                {exTypeManager && (
-                  <View style={styles.exManagerBox}>
-                    {exTypes.map((t) => (
-                      <View key={t} style={styles.exTypeManageRow}>
-                        <Text style={styles.exTypeManageText}>{t}</Text>
-                        <TouchableOpacity
-                          onPress={async () => {
-                            const next = await removeExerciseType(t);
-                            setExTypes(next);
-                            if (!next.includes(exType)) setExType(next[0] || '');
-                          }}
-                        >
-                          <Ionicons name="trash-outline" size={16} color={COLORS.danger || '#EF4444'} />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                    <View style={styles.exAddTypeRow}>
-                      <TextInput
-                        style={styles.inputBox}
-                        placeholder="新增类型，如：跳绳"
-                        placeholderTextColor="#94A3B8"
-                        value={newTypeInput}
-                        onChangeText={setNewTypeInput}
-                        returnKeyType="done"
-                        blurOnSubmit
-                      />
-                      <TouchableOpacity
-                        style={styles.exAddTypeBtn}
-                        onPress={async () => {
-                          const next = await addExerciseType(newTypeInput);
-                          setExTypes(next);
-                          setNewTypeInput('');
-                          setExTypeManager(false);
-                        }}
-                      >
-                        <Text style={styles.exAddTypeBtnText}>添加</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
                 {exType === '其他' && (
                   <>
                     <Text style={styles.sheetLabel}>自定义运动名称</Text>
@@ -791,7 +786,16 @@ const HomePage: React.FC = () => {
                   </>
                 )}
                 <Text style={styles.sheetLabel}>时长（分钟）</Text>
-                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" blurOnSubmit value={exDuration} onChangeText={setExDuration} />
+                <TextInput
+                  style={styles.inputBox}
+                  keyboardType="numeric"
+                  placeholder="如 45"
+                  placeholderTextColor="#94A3B8"
+                  value={exDuration}
+                  onChangeText={setExDuration}
+                  returnKeyType="done"
+                  blurOnSubmit
+                />
                 <TouchableOpacity style={styles.estimateBtn} onPress={estimateEx} disabled={estimatingEx}>
                   {estimatingEx ? (
                     <ActivityIndicator size="small" color="#fff" />
@@ -800,15 +804,52 @@ const HomePage: React.FC = () => {
                   )}
                 </TouchableOpacity>
                 <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
-                <TextInput style={styles.inputBox} keyboardType="numeric" returnKeyType="done" blurOnSubmit value={exKcal} onChangeText={setExKcal} />
-                <View style={styles.sheetActions}>
-                  <TouchableOpacity style={styles.sheetCancel} onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
-                    <Text style={styles.sheetCancelText}>取消</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.sheetSave} onPress={confirmEx}>
-                    <Text style={styles.sheetSaveText}>保存</Text>
-                  </TouchableOpacity>
+                <TextInput
+                  style={styles.inputBox}
+                  keyboardType="numeric"
+                  placeholder="如 320"
+                  placeholderTextColor="#94A3B8"
+                  value={exKcal}
+                  onChangeText={setExKcal}
+                  returnKeyType="done"
+                  blurOnSubmit
+                />
+                <Text style={styles.sheetLabel}>训练时段（可选）</Text>
+                <View style={styles.slotRow}>
+                  {TIME_SLOTS.map((s) => (
+                    <TouchableOpacity
+                      key={s.key}
+                      style={[styles.slotChip, exSlot === s.key && styles.slotChipActive]}
+                      onPress={() => setExSlot(exSlot === s.key ? '' : s.key)}
+                    >
+                      <Text style={[styles.slotChipText, exSlot === s.key && styles.slotChipTextActive]}>{s.label}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
+                <Text style={styles.sheetLabel}>训练计划（具体练了什么，可选）</Text>
+                <TextInput
+                  style={styles.inputBox}
+                  placeholder="如：胸推 4 组 · 深蹲 5×5"
+                  placeholderTextColor="#94A3B8"
+                  value={exPlan}
+                  onChangeText={setExPlan}
+                  returnKeyType="done"
+                  blurOnSubmit
+                />
+                <Text style={styles.sheetLabel}>备注（可选）</Text>
+                <TextInput
+                  style={styles.inputBox}
+                  placeholder="如：力量+有氧"
+                  placeholderTextColor="#94A3B8"
+                  value={exNote}
+                  onChangeText={setExNote}
+                  returnKeyType="done"
+                  blurOnSubmit
+                />
+                <TouchableOpacity style={styles.exAddSaveBtn} onPress={confirmEx}>
+                  <Ionicons name="add-circle-outline" size={16} color="#fff" />
+                  <Text style={styles.exAddSaveBtnText}>保存</Text>
+                </TouchableOpacity>
                 <View style={{ height: 20 }} />
               </ScrollView>
             </KeyboardAvoidingView>
@@ -1225,54 +1266,42 @@ const styles = StyleSheet.create({
     backgroundColor: '#3B82F6',
   },
   exAddText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  activityBtnRow: { flexDirection: 'row', gap: 8 },
-  healthBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    marginTop: 10,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
+  // 今日活动量 - 头部与概览
+  activityHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  activityIconWrap: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center',
   },
-  healthBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '600' },
-  trendBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 10,
-    paddingVertical: 11,
-    borderRadius: 10,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
+  activityLinkBtn: {
+    paddingVertical: 5, paddingHorizontal: 11, borderRadius: 14,
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#BFDBFE',
   },
-  trendBtnText: { color: '#1D4ED8', fontSize: 13, fontWeight: '700' },
-  modelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderRadius: 10,
-    backgroundColor: '#0EA5E9',
+  activitySummary: {
+    flexDirection: 'row', alignItems: 'center',
+    marginTop: 14, paddingVertical: 12, paddingHorizontal: 6,
+    backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE',
   },
-  modelBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
-  estimateTodayBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderRadius: 10,
-    backgroundColor: '#8B5CF6',
+  activitySummaryItem: { flex: 1, alignItems: 'center' },
+  activitySummaryDivider: { width: 1, height: 30, backgroundColor: '#E2E8F0' },
+  activitySummaryValue: { fontSize: 18, fontWeight: '700', color: '#1E40AF' },
+  activitySummaryValueStrong: { color: '#1D4ED8', fontSize: 20 },
+  activitySummaryLabel: { fontSize: 11, color: COLORS.textLight, marginTop: 3 },
+  // 今日活动量 - 对齐的操作按钮
+  actPrimaryBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 14, paddingVertical: 12, borderRadius: 12, backgroundColor: '#3B82F6',
   },
-  estimateTodayText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  actPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  actGrid: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  actBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 11, borderRadius: 12,
+  },
+  actBtnLight: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#BFDBFE' },
+  actBtnCyan: { backgroundColor: '#0EA5E9' },
+  actBtnPurple: { backgroundColor: '#8B5CF6' },
+  actBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  actBtnTextLight: { color: '#1D4ED8', fontSize: 13, fontWeight: '700' },
   healthRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1348,6 +1377,21 @@ const styles = StyleSheet.create({
   exTypeChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   exTypeChipText: { fontSize: 13, color: COLORS.text },
   exTypeChipTextActive: { color: '#fff', fontWeight: '600' },
+  // 时段 chip（与运动日历页一致）
+  slotRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  slotChip: {
+    paddingVertical: 7, paddingHorizontal: 16, borderRadius: 14,
+    backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border,
+  },
+  slotChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  slotChipText: { fontSize: 13, color: COLORS.text },
+  slotChipTextActive: { color: '#fff', fontWeight: '600' },
+  // 保存按钮（与运动日历页一致）
+  exAddSaveBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 16, paddingVertical: 13, borderRadius: 14, backgroundColor: COLORS.primary,
+  },
+  exAddSaveBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   exManageBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
     marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10,
