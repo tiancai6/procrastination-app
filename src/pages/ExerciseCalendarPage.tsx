@@ -513,7 +513,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                   isSel && styles.cellExItemSel,
                   { color: isSel ? '#fff' : TYPE_PALETTE[i % TYPE_PALETTE.length] },
                 ]}
-                numberOfLines={1}
               >
                 {type} {fmtDur(min)}
               </Text>
@@ -557,7 +556,6 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               <Text
                 key={type}
                 style={[styles.wkExItem, { color: TYPE_PALETTE[i % TYPE_PALETTE.length] }]}
-                numberOfLines={1}
               >
                 {type} {fmtDur(min)}
               </Text>
@@ -811,7 +809,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           <Text style={styles.bottomBtnText}>查看健身与身体趋势</Text>
         </TouchableOpacity>
 
-        <View style={{ height: 90 }} />
+        <View style={{ height: 36 }} />
       </ScrollView>
 
       {/* —— 日期详情 Modal（日/月/周/年 点击日期后弹出） —— */}
@@ -1028,49 +1026,49 @@ const styles = StyleSheet.create({
   segText: { fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: '600' },
   segTextActive: { color: COLORS.primary, fontWeight: '700' },
 
-  scroll: { flex: 1, paddingTop: 8 },
+  scroll: { flex: 1, paddingTop: 4 },
   focusHint: { fontSize: 12.5, color: COLORS.textLight, textAlign: 'center', paddingVertical: 8, paddingHorizontal: 24 },
-  navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, paddingVertical: 6 },
+  navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, paddingVertical: 4 },
   navTitle: { fontSize: 16, fontWeight: '600', color: COLORS.text, minWidth: 150, textAlign: 'center' },
 
-  weekHeader: { flexDirection: 'row', marginTop: 6, marginBottom: 4, paddingHorizontal: 8 },
-  weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 12, color: COLORS.textLight },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8 },
+  weekHeader: { flexDirection: 'row', marginTop: 4, marginBottom: 2, paddingHorizontal: 6 },
+  weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 11.5, color: COLORS.textLight },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 6 },
   cell: {
-    width: '14.28%', aspectRatio: 0.82, alignItems: 'center', justifyContent: 'flex-start',
-    borderRadius: 10, paddingTop: 3, paddingHorizontal: 2, marginBottom: 2,
+    width: '14.28%', aspectRatio: 0.62, alignItems: 'center', justifyContent: 'flex-start',
+    borderRadius: 8, paddingTop: 2, paddingHorizontal: 2, marginBottom: 1,
   },
   cellOtherMonth: { opacity: 0.4 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
   cellSelected: { backgroundColor: COLORS.primary, borderWidth: 1.5, borderColor: COLORS.primary },
-  cellNum: { fontSize: 13, color: COLORS.text, fontWeight: '600' },
+  cellNum: { fontSize: 12, color: COLORS.text, fontWeight: '600' },
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
-  cellExList: { alignItems: 'center', marginTop: 1 },
-  cellExItem: { fontSize: 9, fontWeight: '600', lineHeight: 13 },
+  cellExList: { alignItems: 'center', marginTop: 0, flex: 1 },
+  cellExItem: { fontSize: 8, fontWeight: '600', lineHeight: 10.5, textAlign: 'center' },
   cellExItemSel: { color: '#fff' },
   cellExMore: { fontSize: 8, color: '#fff', lineHeight: 12 },
 
-  weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4 },
+  weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 2 },
   wkCell: {
-    flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12, marginHorizontal: 3,
+    flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: 12, marginHorizontal: 3,
     backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border,
   },
   wkWeekday: { fontSize: 11, color: COLORS.textLight },
   wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 2 },
-  wkExList: { alignItems: 'center', marginTop: 2 },
-  wkExItem: { fontSize: 10, fontWeight: '600', lineHeight: 14 },
+  wkExList: { alignItems: 'center', marginTop: 2, flex: 1 },
+  wkExItem: { fontSize: 9, fontWeight: '600', lineHeight: 12, textAlign: 'center' },
   wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13 },
 
-  yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 6, alignItems: 'flex-end', height: 200 },
+  yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4, alignItems: 'flex-end', height: 170 },
   yearCol: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },
   yearBarTrack: { width: 16, height: 130, alignItems: 'center', justifyContent: 'flex-end', backgroundColor: COLORS.background, borderRadius: 8 },
   yearBar: { width: '100%', borderRadius: 8, minHeight: 4 },
   yearMonth: { fontSize: 10, color: COLORS.textLight, marginTop: 6 },
   yearMin: { fontSize: 9, color: COLORS.textLighter, marginTop: 2 },
 
-  hint: { fontSize: 12, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 10, paddingHorizontal: 20 },
+  hint: { fontSize: 11.5, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 6, paddingHorizontal: 20 },
 
   detailPanel: {
     backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 4, borderRadius: 16, padding: 16,
@@ -1154,7 +1152,7 @@ const styles = StyleSheet.create({
 
   statBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.card, marginHorizontal: 16,
-    marginTop: 14, borderRadius: 16, paddingVertical: 14,
+    marginTop: 10, borderRadius: 16, paddingVertical: 12,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
   },
   statItem: { flex: 1, alignItems: 'center' },
@@ -1163,7 +1161,7 @@ const styles = StyleSheet.create({
   statDivider: { width: 1, height: 28, backgroundColor: COLORS.border },
 
   card: {
-    backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 14, borderRadius: 16, padding: 16,
+    backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 10, borderRadius: 16, padding: 14,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
   },
   cardTitle: { fontSize: 14, fontWeight: 'bold', color: COLORS.text, marginBottom: 12 },
@@ -1196,7 +1194,7 @@ const styles = StyleSheet.create({
 
   bottomBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    marginHorizontal: 16, marginTop: 16, paddingVertical: 13, borderRadius: 14, backgroundColor: COLORS.primary,
+    marginHorizontal: 16, marginTop: 12, paddingVertical: 12, borderRadius: 14, backgroundColor: COLORS.primary,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
   bottomBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
