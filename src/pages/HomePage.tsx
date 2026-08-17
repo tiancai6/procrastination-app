@@ -12,11 +12,13 @@ import NutritionDetail from '../components/NutritionDetail';
 import { useSessionStore } from '../store/sessionStore';
 import { useLedgerStore } from '../store/ledgerStore';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
+import { getModelConfigs } from '../utils/modelConfig';
 import { getTodayExpense, getTodayIncome, getMonthExpense, formatMoney } from '../utils/ledger';
 import { getMealsByDate, getNutritionForDate, estimateDayMeals, MEAL_LABEL, NUTRITION_TARGETS, MealContext } from '../utils/nutrition';
 import { pickBodyImage, ocrBodyComposition } from '../utils/bodyOcr';
 import {
   getApiKey,
+  getPreferredMealModelId,
   getBodyProfile,
   setBodyProfile,
   getDailyActivity,
@@ -148,7 +150,7 @@ const HomePage: React.FC = () => {
     }
     const hasKey = await getApiKey();
     if (!hasKey) {
-      Alert.alert('未设置 API Key', '请先到「我的」页面填写 GLM Key');
+      Alert.alert('未设置 API Key', '请先到「我的 → 管理 AI 模型」添加模型');
       return;
     }
     setEstimating(true);
@@ -160,7 +162,11 @@ const HomePage: React.FC = () => {
       exerciseKcal: dayEnergy.exerciseKcal,
       baseLevel: dayEnergy.baseLevel,
     };
-    const { success, total, failedMeals } = await estimateDayMeals(todayMeals, undefined, ctx);
+    // 尊重用户在三餐模型选择器里设置过的偏好模型（改了就记住，跨首页与弹窗生效）；为空则用全局默认
+    const preferredId = await getPreferredMealModelId();
+    const models = await getModelConfigs();
+    const mealCfg = preferredId ? models.find((m) => m.id === preferredId) : undefined;
+    const { success, total, failedMeals } = await estimateDayMeals(todayMeals, undefined, ctx, mealCfg);
     setEstimating(false);
     await loadMeals();
     emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据

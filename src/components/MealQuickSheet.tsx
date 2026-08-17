@@ -36,6 +36,7 @@ import {
 import { getApiKey, getBodyProfile } from '../utils/storage';
 import { calcDayEnergy } from '../utils/activity';
 import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
+import { getPreferredMealModelId, setPreferredMealModelId } from '../utils/storage';
 import CalendarPicker, { WEEK_LABELS } from './CalendarPicker';
 import NutritionDetail from './NutritionDetail';
 
@@ -145,6 +146,16 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [selectedModelId, setSelectedModelId] = useState('');
+
+  // 初始化三餐偏好模型（持久化）：打开弹窗时读取上次选择的模型，使「改模型」跨会话生效
+  useEffect(() => {
+    if (!visible) return;
+    (async () => {
+      const pref = await getPreferredMealModelId();
+      setSelectedModelId(pref);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [foodLib, setFoodLib] = useState<FoodItem[]>([]);
   const [showFoodPicker, setShowFoodPicker] = useState(false);
@@ -490,7 +501,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                 <View style={styles.modelPickBox}>
                   <TouchableOpacity
                     style={[styles.modelPickItem, !selectedModelId && styles.modelPickItemActive]}
-                    onPress={() => { setSelectedModelId(''); setShowModelPicker(false); }}
+                    onPress={() => { setSelectedModelId(''); setPreferredMealModelId(''); setShowModelPicker(false); }}
                   >
                     <Text style={styles.modelPickItemText}>默认（{models.find((m) => m.isDefault)?.name || '未配置'}）</Text>
                   </TouchableOpacity>
@@ -498,7 +509,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                     <TouchableOpacity
                       key={m.id}
                       style={[styles.modelPickItem, selectedModelId === m.id && styles.modelPickItemActive]}
-                      onPress={() => { setSelectedModelId(m.id); setShowModelPicker(false); }}
+                      onPress={() => { setSelectedModelId(m.id); setPreferredMealModelId(m.id); setShowModelPicker(false); }}
                     >
                       <Text style={styles.modelPickItemText}>
                         {m.name}{m.isVision ? ' · 视觉' : ''}{m.webSearch ? ' · 搜索' : ''}

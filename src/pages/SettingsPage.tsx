@@ -9,6 +9,7 @@ import { clearAllData, saveProfileImage, getProfileImage, getApiKey, setApiKey, 
 import { importBackup } from '../utils/backup';
 import { doManualExport } from '../utils/autoBackup';
 import ModelConfigPage from './ModelConfigPage';
+import AiUsagePage from './AiUsagePage';
 import { getModelConfigs } from '../utils/modelConfig';
 
 const SettingsPage: React.FC = () => {
@@ -24,6 +25,7 @@ const SettingsPage: React.FC = () => {
   const [visionModelInput, setVisionModelInput] = useState('glm-4v-flash');
   const [aiEnabled, setAiEnabled] = useState(false);
   const [showModelCfg, setShowModelCfg] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
   const [modelCount, setModelCount] = useState(0);
 
   useEffect(() => {
@@ -156,6 +158,12 @@ const SettingsPage: React.FC = () => {
       label: '管理 AI 模型', 
       description: modelCount > 0 ? `已配置 ${modelCount} 个模型` : '添加 GLM / 豆包 / DeepSeek / Gemini',
       action: () => setShowModelCfg(true),
+    },
+    { 
+      icon: <Ionicons name="analytics-outline" size={20} color={COLORS.primary} />, 
+      label: 'AI 用量记录', 
+      description: '每次调用的模型与 token 消耗统计',
+      action: () => setShowUsage(true),
     },
     { 
       icon: <Ionicons name="share-outline" size={20} color={COLORS.primary} />, 
@@ -308,6 +316,8 @@ const SettingsPage: React.FC = () => {
       </Modal>
 
       <ModelConfigPage visible={showModelCfg} onClose={() => { setShowModelCfg(false); refreshModelCount(); }} />
+
+      <AiUsagePage visible={showUsage} onClose={() => setShowUsage(false)} />
 
       <Modal
         visible={showAboutModal}

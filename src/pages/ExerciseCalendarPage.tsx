@@ -33,10 +33,16 @@ import { Habit, HabitCheckin } from '../types';
 import { getExerciseTypes, DEFAULT_EXERCISE_TYPES, estimateExerciseKcal, addExerciseType, removeExerciseType } from '../utils/activity';
 import TrendPage from './TrendPage';
 
-// 运动类型稳定调色板（保证同一类型始终同色；占比环形图用彩色区分类别）
+// 运动类型调色板（奶茶暖色调，比之前的莫兰迪冷色更鲜艳活泼）
 const TYPE_PALETTE = [
-  '#6E8CB0', '#7FA99B', '#9B86C4', '#C58BAB',
-  '#D2A679', '#8FAE7E', '#C9B36A', '#8A9BB0',
+  '#E8856A', // 暖珊瑚/陶土色
+  '#6BB380', // 清新绿
+  '#E8B84A', // 蜂蜜金
+  '#D4768E', // 玫瑰粉
+  '#5DADE2', // 天空蓝
+  '#AF7AC5', // 薰衣草紫
+  '#F0B27A', // 焦糖色
+  '#58D68D', // 薄荷绿
 ];
 
 // 训练时段（5 选 1）
@@ -776,7 +782,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
           <Text style={styles.bottomBtnText}>查看健身与身体趋势</Text>
         </TouchableOpacity>
 
-        <View style={{ height: 36 }} />
+        <View style={{ height: 16 }} />
       </ScrollView>
 
       {/* —— 日期详情 Modal（日/月/周/年 点击日期后弹出） —— */}
@@ -1002,11 +1008,11 @@ const styles = StyleSheet.create({
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 11.5, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 6 },
   cell: {
-    width: '14.28%', aspectRatio: 0.68, alignItems: 'center', justifyContent: 'flex-start',
-    borderRadius: 8, paddingTop: 2, paddingHorizontal: 2, marginBottom: 1,
+    width: '14.28%', aspectRatio: 0.58, alignItems: 'center', justifyContent: 'flex-start',
+    borderRadius: 7, paddingTop: 2, paddingHorizontal: 2, marginBottom: 1,
     borderWidth: 1, borderColor: '#F1F5F9',
   },
-  cellOtherMonth: { opacity: 0.4 },
+  cellOtherMonth: { opacity: 0.45 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
   cellSelected: { backgroundColor: COLORS.primary, borderWidth: 1.5, borderColor: COLORS.primary },
   cellNum: { fontSize: 12, color: COLORS.text, fontWeight: '600' },
@@ -1040,7 +1046,7 @@ const styles = StyleSheet.create({
   yearMonth: { fontSize: 10, color: COLORS.textLight, marginTop: 6 },
   yearMin: { fontSize: 9, color: COLORS.textLighter, marginTop: 2 },
 
-  hint: { fontSize: 11.5, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 6, paddingHorizontal: 20 },
+  hint: { fontSize: 11, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 20 },
 
   detailPanel: {
     backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 4, borderRadius: 16, padding: 16,
@@ -1124,7 +1130,7 @@ const styles = StyleSheet.create({
 
   statBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.card, marginHorizontal: 16,
-    marginTop: 10, borderRadius: 16, paddingVertical: 12,
+    marginTop: 14, marginBottom: 6, borderRadius: 16, paddingVertical: 12,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 3,
   },
   statItem: { flex: 1, alignItems: 'center' },
@@ -1166,7 +1172,7 @@ const styles = StyleSheet.create({
 
   bottomBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    marginHorizontal: 16, marginTop: 12, paddingVertical: 12, borderRadius: 14, backgroundColor: COLORS.primary,
+    marginHorizontal: 16, marginTop: 8, paddingVertical: 12, borderRadius: 14, backgroundColor: COLORS.primary,
     shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
   bottomBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },

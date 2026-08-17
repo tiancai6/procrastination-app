@@ -1,0 +1,72 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// ============ AI 调用用量记录 ============
+// 每次调用 AI（三餐估算 / 运动消耗 / AI 对话 / 饮食建议 / 食物分析）后，
+// 由 model.ts 把本次 token 用量写入这里，便于事后分析「哪个功能、哪个模型花了多少 token」。
+
+export interface AiUsageRecord {
+  ts: number; // 调用时间戳（ms）
+  feature: string; // 调用来源：三餐估算 / 三餐估算(批量) / 运动消耗 / AI对话 / 饮食建议 / 食物分析
+  brand: string; // 品牌：glm / doubao / deepseek / gemini
+  modelId: string; // 实际模型标识
+  promptTokens: number; // 输入 token
+  completionTokens: number; // 输出 token
+  totalTokens: number; // 总 token
+}
+
+const AI_USAGE_KEY = 'ai_usage_log';
+const MAX_RECORDS = 2000;
+
+// 写入一条用量记录（自动追加，最多保留最近 2000 条）
+export const recordAiUsage = async (rec: Omit<AiUsageRecord, 'ts'>): Promise<void> => {
+  try {
+    const full: AiUsageRecord = { ts: Date.now(), ...rec };
+    const raw = await AsyncStorage.getItem(AI_USAGE_KEY);
+    const list: AiUsageRecord[] = raw ? (JSON.parse(raw) as AiUsageRecord[]) : [];
+    list.push(full);
+    if (list.length > MAX_RECORDS) list.splice(0, list.length - MAX_RECORDS);
+    await AsyncStorage.setItem(AI_USAGE_KEY, JSON.stringify(list));
+    // 任何用量变更也触发自动备份，保证记录不丢
+  } catch (e) {
+    console.error('[usage] record failed', e);
+  }
+};
+
+export const getAiUsageLog = async (): Promise<AiUsageRecord[]> => {
+  try {
+    const raw = await AsyncStorage.getItem(AI_USAGE_KEY);
+    return raw ? (JSON.parse(raw) as AiUsageRecord[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const clearAiUsageLog = async (): Promise<void> => {
+  try {
+    await AsyncStorage.removeItem(AI_USAGE_KEY);
+  } catch (e) {
+    console.error('[usage] clear failed', e);
+  }
+};
+
+export interface UsageSummary {
+  totalTokens: number;
+  totalPrompt: number;
+  totalCompletion: number;
+  count: number;
+  byModel: Record<string, number>; // modelId -> tokens
+  byFeature: Record<string, number>; // feature -> tokens
+}
+
+// 汇总统计（总 token / 输入 / 输出 / 次数 / 按模型 / 按功能）
+export const summarizeAiUsage = (list: AiUsageRecord[]): UsageSummary => {
+  const s: UsageSummary = { totalTokens: 0, totalPrompt: 0, totalCompletion: 0, count: list.length, byModel: {}, byFeature: {} };
+  for (const r of list) {
+    s.totalTokens += r.totalTokens;
+    s.totalPrompt += r.promptTokens;
+    s.totalCompletion += r.completionTokens;
+    s.byModel[r.modelId] = (s.byModel[r.modelId] || 0) + r.totalTokens;
+    s.byFeature[r.feature] = (s.byFeature[r.feature] || 0) + r.totalTokens;
+  }
+  return s;
+};

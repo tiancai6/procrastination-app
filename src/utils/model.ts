@@ -1,4 +1,6 @@
 import { getActiveConfig, ModelConfig, BRAND_PRESETS } from './modelConfig';
+import { recordAiUsage } from './usage';
+import { showToast } from './toast';
 
 // ============ 统一模型调用（OpenAI 兼容格式）============
 // 所有品牌（GLM / 豆包 / DeepSeek / Gemini）的 chat/completions 都走这里。
@@ -8,6 +10,7 @@ export interface CallOpts {
   temperature?: number;
   maxTokens?: number;
   forceSearch?: boolean; // 即便模型未勾选「联网搜索」，本轮也强制联网
+  feature?: string; // 调用来源标签（三餐估算/运动消耗/AI对话…），用于用量记录
 }
 
 type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
@@ -26,6 +29,26 @@ const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined 
 };
 
 const defaultMaxTokens = (cfg: ModelConfig): number => (cfg.brand === 'glm' ? 1024 : 2048);
+
+// 解析各品牌返回的 usage（Chat Completions 用 prompt_tokens/completion_tokens；Responses API 用 input_tokens/output_tokens），
+// 写入用量记录并弹 Toast 提示「模型 + token 用量」。
+const reportUsage = (cfg: ModelConfig, usage: any, feature: string): void => {
+  if (!usage) return;
+  const promptTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+  const completionTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  const totalTokens = usage.total_tokens ?? promptTokens + completionTokens;
+  if (!totalTokens) return;
+  recordAiUsage({
+    brand: cfg.brand,
+    modelId: cfg.modelId,
+    feature: feature || 'AI调用',
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  }).catch(() => {});
+  const label = cfg.name || cfg.modelId;
+  showToast(`模型 ${label} · 本约 ${totalTokens} token（入${promptTokens}/出${completionTokens}）`);
+};
 
 // 容错解析 AI 返回的 JSON：自动剥离 ```json ... ``` 围栏及前后多余文字。
 // DeepSeek / Gemini 常在 JSON 外包一层 markdown 围栏，直接 JSON.parse 会失败。
@@ -93,6 +116,7 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   }
   const data = await res.json();
   const content: string | undefined = data?.choices?.[0]?.message?.content;
+  reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
   if (!content) throw new Error('模型返回为空');
   return content;
 };
@@ -181,6 +205,7 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   }
   const data = await res.json();
   const content = extractResponsesText(data);
+  reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
   if (!content) throw new Error('模型返回为空');
   return content;
 };
@@ -251,6 +276,10 @@ export const postChatStreamResponses = (
               if (json?.type === 'response.output_text.delta' && json.delta) {
                 full += json.delta;
                 onToken?.(json.delta);
+              }
+              // 流式末尾的 response.completed 事件带 usage（用于用量记录）
+              if (json?.type === 'response.completed' && json.response?.usage) {
+                reportUsage(cfg, json.response.usage, opts.feature || 'AI对话');
               }
             } catch {
               // 非 JSON 行（event 行 / 心跳）忽略
@@ -338,6 +367,8 @@ export const postChatStream = (
                 full += delta;
                 onToken?.(delta);
               }
+              // 部分供应商在流式末尾的 chunk 带 usage（best-effort，用于用量记录）
+              if (json?.usage) reportUsage(cfg, json.usage, opts.feature || 'AI对话');
             } catch {
               // 非 JSON 行（心跳）忽略
             }

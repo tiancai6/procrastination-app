@@ -474,8 +474,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: true })
-        : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: needSearch });
+        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: true, feature: '三餐估算' })
+        : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: needSearch, feature: '三餐估算' });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
@@ -656,8 +656,8 @@ const requestMealBatch = async (
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: true })
-        : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch });
+        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: true, feature: '三餐估算(批量)' })
+        : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch, feature: '三餐估算(批量)' });
       const raw = parseJsonContent(content);
       const results = new Map<string, MealNutrition>();
       idxToEntry.forEach((e, i) => {
@@ -865,7 +865,7 @@ ${mealsSummary}
     const content = await postChat(cfg, [
       { role: 'system', content: '你是专业的营养师，善于用大白话给普通人可执行的饮食建议。' },
       { role: 'user', content: prompt },
-    ], { temperature: 0.6, maxTokens: 400 });
+    ], { temperature: 0.6, maxTokens: 400, feature: '饮食建议' });
 
     return { text: content || '', status: content ? 'ok' : 'error' };
   } catch (e) {

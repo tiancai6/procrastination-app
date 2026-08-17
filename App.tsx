@@ -15,6 +15,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
 import { migrateIfNeeded } from './src/utils/modelConfig';
+import { ToastHost } from './src/utils/toast';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -170,6 +171,9 @@ export const App: React.FC = () => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* 全局轻提示：每次 AI 调用后显示「模型 + token 用量」 */}
+      <ToastHost />
     </>
   );
 };

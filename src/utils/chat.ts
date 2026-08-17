@@ -123,6 +123,7 @@ export const estimateChars = (messages: ChatMessage[], summary = ''): number =>
 export const sendChat = async (
   messages: ChatMessage[],
   systemContext?: string,
+  feature = 'AI对话',
 ): Promise<string> => {
   const hasImages = messages.some((m) => m.role === 'user' && m.images && m.images.length > 0);
   const cfg = await getActiveConfig(hasImages);
@@ -154,7 +155,7 @@ export const sendChat = async (
     }
   }
 
-  const content = await postChat(cfg, payload, { maxTokens: MAX_OUTPUT_TOKENS });
+  const content = await postChat(cfg, payload, { maxTokens: MAX_OUTPUT_TOKENS, feature });
   return content;
 };
 
@@ -186,7 +187,7 @@ export const compressChat = async (
       { role: 'system', content: COMPRESS_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },
     ],
-    { temperature: 0.3, maxTokens: 4096 },
+    { temperature: 0.3, maxTokens: 4096, feature: '对话压缩' },
   );
 };
 
@@ -210,7 +211,7 @@ export const rebuildSummary = async (md: string): Promise<string> => {
       { role: 'system', content: REBUILD_SYSTEM_PROMPT(today) },
       { role: 'user', content: md },
     ],
-    { temperature: 0.3, maxTokens: 4096 },
+    { temperature: 0.3, maxTokens: 4096, feature: '档案整理' },
   );
 };
 
@@ -226,6 +227,7 @@ export const sendChatStream = (
   signal?: AbortSignal,
   forceSearch = false,
   cfgOverride?: ModelConfig,
+  feature = 'AI对话',
 ): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     (async () => {
@@ -271,9 +273,9 @@ export const sendChatStream = (
       // 其余品牌（GLM/Gemini）继续走 Chat Completions 的 postChatStream。
       const useResponsesSearch = cfg.brand === 'doubao' && (forceSearch || cfg.webSearch);
       if (useResponsesSearch) {
-        postChatStreamResponses(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch: true }).then(resolve, reject);
+        postChatStreamResponses(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch: true, feature }).then(resolve, reject);
       } else {
-        postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch }).then(resolve, reject);
+        postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch, feature }).then(resolve, reject);
       }
     })().catch(reject);
   });

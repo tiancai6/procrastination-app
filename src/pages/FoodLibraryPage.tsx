@@ -162,7 +162,7 @@ const FoodLibraryPage: React.FC = () => {
               ],
             },
           ],
-          { temperature: 0.3, maxTokens: 800 },
+          { temperature: 0.3, maxTokens: 800, feature: '食物分析' },
         );
         const p: any = parseJsonContent(content);
         setForm((f) => ({
@@ -207,7 +207,7 @@ const FoodLibraryPage: React.FC = () => {
           { role: 'system', content: TEXT_RECOGNITION_PROMPT },
           { role: 'user', content: raw },
         ],
-        { temperature: 0.2, maxTokens: 800 },
+        { temperature: 0.2, maxTokens: 800, feature: '食物分析' },
       );
       const p: any = parseJsonContent(content);
       const per100 = p?.per100 || {};

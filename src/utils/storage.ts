@@ -487,6 +487,27 @@ export const getApiKey = async (): Promise<string | null> => {
   }
 };
 
+// 三餐估算用的「偏好模型」：用户在三餐模型选择器里改了之后记住，首页按钮和三餐弹窗都生效。
+// 为空表示用全局默认模型。
+const PREFERRED_MEAL_MODEL_KEY = 'preferred_meal_model_id';
+
+export const getPreferredMealModelId = async (): Promise<string> => {
+  try {
+    return (await AsyncStorage.getItem(PREFERRED_MEAL_MODEL_KEY)) || '';
+  } catch {
+    return '';
+  }
+};
+
+export const setPreferredMealModelId = async (id: string): Promise<void> => {
+  try {
+    if (id) await AsyncStorage.setItem(PREFERRED_MEAL_MODEL_KEY, id);
+    else await AsyncStorage.removeItem(PREFERRED_MEAL_MODEL_KEY);
+  } catch (e) {
+    console.error('[storage] setPreferredMealModelId failed', e);
+  }
+};
+
 export const setModel = async (model: string): Promise<void> => {
   try {
     await AsyncStorage.setItem(AI_MODEL, model && model.trim() ? model.trim() : DEFAULT_AI_MODEL);

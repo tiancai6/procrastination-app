@@ -109,7 +109,7 @@ export const estimateExerciseKcal = async (desc: string): Promise<number | null>
   const prompt = `估算以下运动的大致能量消耗（千卡）。只返回一个整数（千卡），不要任何其它文字：\n${desc}`;
   try {
     const msg: ChatMessage = { id: 'ex', role: 'user', content: prompt, ts: Date.now() };
-    const text = await sendChat([msg], undefined);
+    const text = await sendChat([msg], undefined, '运动消耗');
     const m = text.match(/\d+/);
     return m ? parseInt(m[0], 10) : null;
   } catch (e) {
