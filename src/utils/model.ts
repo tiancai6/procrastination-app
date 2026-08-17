@@ -121,7 +121,15 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   const data = await res.json();
   const content: string | undefined = data?.choices?.[0]?.message?.content;
   reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-  if (content) recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+  // 🔧 无论 content 是否为空，都存一份原始响应——用于排查"有token消耗却返回为空"等诡异问题
+  const rawStr = JSON.stringify(data);
+  if (content) {
+    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+  } else {
+    // content 为空时存完整响应体（可能模型返回了 tool_call / 字段路径不同 / 结构异常）
+    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
+    console.error('[model] ⚠️ 模型返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
+  }
   if (!content) throw new Error('模型返回为空');
   return content;
 };
@@ -213,7 +221,14 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   const data = await res.json();
   const content = extractResponsesText(data);
   reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-  if (content) recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+  // 🔧 无论 content 是否为空，都存原始响应
+  const rawStr = JSON.stringify(data);
+  if (content) {
+    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+  } else {
+    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
+    console.error('[model] ⚠️ Responses API 返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
+  }
   if (!content) throw new Error('模型返回为空');
   return content;
 };
