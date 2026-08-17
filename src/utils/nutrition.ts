@@ -431,6 +431,20 @@ const applyKnownFoods = (n: MealNutrition, known: KnownFood[] | null | undefined
   n.fiber = n.items.reduce((s, i) => s + (i.fiber || 0), 0);
 };
 
+// 由「已关联食物库」的已知食物本地算出一餐营养（不发 AI，0 token）。
+// 已知食物已按用户实际份量缩放（scaleKnown），这里只拼成标准 MealNutrition 结构。
+const localNutrition = (known: KnownFood[]): MealNutrition => {
+  const items = known.map((k) => ({
+    name: k.name,
+    protein: k.protein,
+    calories: k.calories,
+    fat: k.fat,
+    carbs: k.carbs,
+    fiber: k.fiber,
+  }));
+  return normalizeNutrition({ items, adequacy: '适量', comment: '已按食物库精确值计算（未调用 AI）' });
+};
+
 // 估算单餐营养（返回该餐的明细 + 合计）
 // 限流自动重试：免费 GLM 接口有频率上限（如每分钟若干次）。
 // 一顿饭一个请求，批量估算时并发打过去很容易返回 429，这里遇到 429 就退避重试，
@@ -542,21 +556,16 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
 // 设计：一次请求把全部餐次 + 运动信息喂给模型，要求它按编号 1..N 对每餐分别独立估算，
 // 返回 { "1": {...}, "2": {...} } 的逐餐 JSON（解析兼容单餐不带编号 / 数组，见 requestMealBatch）。
 // 整个估算只发这一次请求，不再逐餐兜底或重试——一次拿全，省 token。
-const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一批餐次**（早/午/晚/加餐，加餐可能有多条）。
-这批餐**可能全部属于同一天，也可能横跨好几个不同日期**（用户攒了几天一起补记），用户会用「—— 日期 ——」把它们分组标明。
-请对每一餐**分别独立估算**营养，再把所有餐的结果汇总成一个 JSON 对象返回（不要输出任何 JSON 以外的文字）。
+const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一批餐次**（早/午/晚/加餐，加餐可能有多条），这些餐可能分属同一天或不同日期，用户会用「—— 日期 ——」分组标明。
+请对每一餐**分别独立估算**营养，最后**返回一个 JSON 数组**（不要输出任何 JSON 以外的文字），数组里每个元素按顺序对应上面列出的每一餐（第 1 个元素=【1】，第 2 个=【2】…）。
 
-返回格式：顶层 key 用我给的编号（1、2、3…），每餐的值结构如下：
+数组每个元素的结构：
 {
-  "1": {
-    "meal": "早餐",
-    "items": [{"name":"食物名(含大致分量)","protein":数字,"calories":数字,"fat":数字,"carbs":数字,"fiber":数字}],
-    "protein": 数字, "calories": 数字, "fat": 数字, "carbs": 数字, "fiber": 数字, "water": 数字,
-    "adequacy": "不足" | "适量" | "过量",
-    "comment": "一句话点评与建议"
-  },
-  "2": { ... },
-  ...
+  "meal": "这餐的餐次名（如 早餐）",
+  "items": [{"name":"食物名(含大致分量)","protein":数字,"calories":数字,"fat":数字,"carbs":数字,"fiber":数字}],
+  "protein": 数字, "calories": 数字, "fat": 数字, "carbs": 数字, "fiber": 数字, "water": 数字,
+  "adequacy": "不足" | "适量" | "过量",
+  "comment": "一句话点评与建议"
 }
 
 硬性要求：
@@ -566,9 +575,9 @@ const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次�
 4. water 是该餐液体量(ml)，没有填 0。
 5. adequacy 按该餐占**它所属那一天**推荐量的合理比例判断（参考：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、纤维约25g、饮水约1500ml）。
 6. 若某个日期下给了「当日身体与运动情况」（含该日可摄入总量TDEE），该日期的每一餐都要据此判断 adequacy：运动消耗大可放宽、久坐少动要更克制，并在 comment 点明与当天运动是否匹配、建议多吃还是少吃。
-7. 编号必须与用户给出的餐次一一对应；即便某餐无法估算也要返回（items 为空、各项为 0）。
-8. **不同日期的餐互不相干，绝对不要把跨日期的餐加在一起算**：不要因为总条数多就把某一餐判成「过量」。每餐只和它所属那一天的全天推荐量对比。
-只输出 JSON。`;
+7. **不同日期的餐互不相干，绝对不要把跨日期的餐加在一起算**：每餐只和它所属那一天的全天推荐量对比。
+8. 严格返回 JSON 数组，顺序与各餐一一对应；即便某餐无法估算也要返回（items 为空、各项为 0）。
+只输出 JSON 数组。`;
 
 // 运动上下文入参：单日场景直接传一个 MealContext；
 // 补记多天时传 { '2026-08-12': ctx, '2026-08-13': ctx } 按日期各给一份，避免把某天运动套到所有天。
@@ -597,12 +606,9 @@ const normalizeCtxInput = (
 // 攒了很多天时自动拆成多批串行发送，既不超上限被截断，也远少于「一餐一个请求」的次数。
 const BATCH_MEALS = 10;
 
-const knownScaledFor = (e: MealEntry) =>
-  e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k)) : null;
-
-// 从模型批量返回里稳健抽取每餐营养。
-// ⚠️ 根因：模型常不按 prompt 返回 { "1":{...},"2":{...} }，而返回 数组 / 语义 key（早餐/晚餐/加餐）/ 外层套 meals 数组 / 单餐裸对象。
-// 旧代码只认 raw["1"] → 全部取不到 → 0/N。这里按多策略兜底抽取，保证「发 1 次请求」尽量拿到结果。
+// 从模型批量返回里抽取每餐营养。
+// 简化后：prompt 要求模型返回「与各餐顺序一一对应的 JSON 数组」，这里按数组顺序映射到各餐即可。
+// 兼容两种形态：裸数组 [ {...}, {...} ]；或外层包了 meals/foods 数组；再兜底编号对象。
 const extractBatchMeals = (
   raw: any,
   chunk: MealEntry[],
@@ -619,68 +625,43 @@ const extractBatchMeals = (
   const setOne = (e: MealEntry, obj: any) => {
     const n = pickOne(obj);
     if (!n) return;
-    applyKnownFoods(n, e.knownFoods);
+    applyKnownFoods(n, e.knownFoods); // 已知食物用库里准确值覆盖（按用户实际份量缩放后）
     results.set(e.id, n);
   };
 
-  // 策略1：编号对象 { "1":{...}, "2":{...} }
+  // 形态1/2：数组（裸数组 或 外层包 meals/foods）
+  let arr: any[] | null = null;
+  if (Array.isArray(raw)) arr = raw;
+  else if (Array.isArray(raw?.meals)) arr = raw.meals;
+  else if (Array.isArray(raw?.foods)) arr = raw.foods;
+  if (arr) {
+    arr.forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
+    return results;
+  }
+  // 形态3（兜底）：编号对象 { "1":{...}, "2":{...} }
   if (seqList.every(([i]) => raw && raw[String(i)])) {
     seqList.forEach(([i, e]) => setOne(e, raw[String(i)]));
     return results;
   }
-  // 策略2：数组 [ {...}, {...}, {...} ]
-  if (Array.isArray(raw)) {
-    raw.forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
-    return results;
-  }
-  // 策略3：外层包了 meals/foods/items/list/results/data 数组
-  const arrKey = ['meals', 'foods', 'items', 'list', 'results', 'data'].find((k) => Array.isArray(raw?.[k]));
-  if (arrKey) {
-    (raw[arrKey] as any[]).forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
-    return results;
-  }
-  // 策略4：语义 key（早餐/午餐/晚餐/加餐…）按 MEAL_LABEL 匹配
-  const labelMap = new Map<string, MealEntry>();
-  seqList.forEach(([, e]) => { const lab = (MEAL_LABEL[e.type] || '').replace(/\s/g, ''); if (lab) labelMap.set(lab, e); });
-  if (labelMap.size > 0) {
-    Object.keys(raw || {}).forEach((k) => {
-      const e = labelMap.get(k.replace(/\s/g, ''));
-      if (e) setOne(e, raw[k]);
-    });
-    if (results.size > 0) return results;
-  }
-  // 策略5：裸对象即单餐
-  if (chunk.length === 1) { setOne(chunk[0], raw); return results; }
-  // 策略6：任意「看起来像餐」的值，按出现顺序映射
-  const vals = Object.values(raw || {}).filter((v) => pickOne(v));
-  vals.forEach((v: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, v); });
   return results;
 };
 
-// 一批餐 → 一个请求
+// 一批「需 AI 估算」的餐 → 一个请求（关联的餐已在外部本地算好，不再进这里）。
+// prompt 要求模型返回「与各餐顺序一一对应的 JSON 数组」，解析只认数组（见 extractBatchMeals）。
 const requestMealBatch = async (
   cfg: ModelConfig,
   chunk: MealEntry[],
   ctxMap: Record<string, MealContext>,
 ): Promise<{ results: Map<string, MealNutrition>; status: 'ok' | 'error' | 'rate'; message?: string }> => {
-  // 是否需要联网：任一一餐含「食物库没覆盖的食物」即联网
+  // 是否需要联网：任一一餐含「食物库没覆盖的自由文本食物」即联网
   let needSearch = false;
   chunk.forEach((e) => {
-    const known = knownScaledFor(e);
-    if (known && known.length) {
-      let remaining = e.content;
-      known.forEach((k) => {
-        const c = foodNameCore(k.name);
-        if (c) remaining = remaining.split(c).join('');
-      });
-      const left = remaining.replace(/[（()）\d.gG千卡kcal碗份根片个块只杯mlML，,、。.\s]/g, '').trim();
-      if (left.length > 0) needSearch = true;
-    } else {
-      needSearch = true;
-    }
+    const rawKnown = e.knownFoods && e.knownFoods.length ? e.knownFoods : null;
+    const left = rawKnown ? stripKnownText(e.content, rawKnown).length > 0 : true;
+    if (left) needSearch = true;
   });
 
-  // 按日期分组（Map 保留插入顺序 = 已排好的日期顺序），编号在本批内全局连续 1..N
+  // 按日期分组（Map 保留插入顺序），编号在本批内全局连续 1..N
   const groups = new Map<string, MealEntry[]>();
   chunk.forEach((e) => {
     const arr = groups.get(e.date) || [];
@@ -696,18 +677,7 @@ const requestMealBatch = async (
     const blocks = list.map((e) => {
       seq += 1;
       idxToEntry.set(seq, e);
-      let block = `【${seq}】${MEAL_LABEL[e.type] || '餐'}：${e.content}`;
-      const known = knownScaledFor(e);
-      if (known && known.length) {
-        const knownText = known
-          .map(
-            (k) =>
-              `- ${foodNameCore(k.name) || k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
-          )
-          .join('\n  ');
-        block += `\n  （本餐已知食物营养来自你的食物库，请直接采用这些数值、计入总和：\n  ${knownText}\n  ）`;
-      }
-      return block;
+      return `【${seq}】${MEAL_LABEL[e.type] || '餐'}：${e.content}`;
     });
     const dayCtx = ctxMap[date];
     const ctxText = dayCtx ? '\n\n' + buildMealContextText(dayCtx, date) : '';
@@ -719,9 +689,8 @@ const requestMealBatch = async (
   const intro = multiDate
     ? `以下是 ${groups.size} 个不同日期、共 ${chunk.length} 餐（攒了几天一起补记），请按每餐所属日期分别独立估算：`
     : `这是 ${dateHeading(Array.from(groups.keys())[0])} 的 ${chunk.length} 餐，请分别估算每一餐的营养：`;
-  const outro = multiDate
-    ? `\n\n请按上面编号 1..${chunk.length} 返回每餐的营养 JSON（顶层 key 用编号）。注意：不同日期的餐不要相加，每餐的 adequacy 只按它所属那一天的全天推荐量判断。`
-    : `\n\n请按上面编号 1..${chunk.length} 返回每餐的营养 JSON（顶层 key 用编号）。`;
+  // 关键改动：不再要求「编号 key 对象」，而是「与各餐顺序一一对应的 JSON 数组」——模型最擅长、最稳。
+  const outro = `\n\n请返回一个 JSON 数组，数组每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…），不要额外输出任何文字。`;
   const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
   // 输出预算：按餐数动态给，避免多餐 JSON 被截断，又不超模型上限
@@ -800,45 +769,50 @@ export const estimateAllMeals = async (
   return { results, status: 'ok', message: lastMsg };
 };
 
-// 估算某天全部餐。
-// 设计：把所有餐次 + 当日运动信息打包成 **1 次**请求（estimateAllMeals），
-// 让模型对每一餐分别独立判断，一次返回每餐各自的营养。
-// 仅当批量**完全失败**（0 餐解析到）时，逐餐兜底 1 次保底（不重试第 2 轮）。
-// 返回成功/失败数，失败餐列表交给调用方弹提示。
-export const estimateDayMeals = async (
+// 统一估算入口：先本地算「全关联」的餐（0 token），其余待估餐按日期批量问 AI，最后合并保存。
+// 流程：① 分流（本地 or AI）② 待估餐批量问 AI（含当日运动）③ 解析按数组顺序对应各餐 ④ 合并。
+// 不再有「批量失败→逐餐静默回退」——失败就如实报失败，不偷偷多发请求烧 token。
+const estimateCore = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
   ctx?: MealCtxInput,
-  cfg?: ModelConfig,
+  cfgOverride?: ModelConfig,
 ): Promise<{ entries: MealEntry[]; success: number; total: number; failedMeals: MealEntry[] }> => {
+  const cfg = cfgOverride || (await getActiveConfig(false));
   const valid = entries.filter((e) => e.content && e.content.trim());
   const total = valid.length;
   if (total === 0) return { entries, success: 0, total: 0, failedMeals: [] };
   if (onEach) onEach(0, total);
+  if (!cfg) return { entries, success: 0, total, failedMeals: valid };
 
-  // 只走这一次批量请求：餐次 + 运动信息一起发给模型，模型对每餐单独判断
-  const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
-  if (batch.status === 'nokey') {
-    const list0 = await getMeals();
-    return { entries: list0, success: 0, total, failedMeals: valid };
-  }
-  let results = batch.results;
-
-  // 保底：批量完全失败（0 餐解析到）时，逐餐补 1 次（estimateMealNutrition 内部已有 429 重试）
-  // 正常情况不会走到这里；只在模型返回格式异常等极端情况触发
-  if (results.size === 0 && valid.length > 0) {
-    console.warn('[Nutrition] 批量完全失败，启动逐餐兜底保底');
-    const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(valid.map((e) => e.date))));
-    for (const e of valid) {
-      try {
-        const { result } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
-        if (result) results.set(e.id, result);
-      } catch {}
-      onEach?.(results.size, total);
+  // ① 分流
+  const results = new Map<string, MealNutrition>();
+  const needAi: MealEntry[] = [];
+  for (const e of valid) {
+    const rawKnown = e.knownFoods && e.knownFoods.length ? e.knownFoods : null;
+    const known = rawKnown ? rawKnown.map((k) => scaleKnown(k)) : null;
+    // 全关联且分量已填 → 本地直接算（不发 AI，最准，0 token）
+    if (known && stripKnownText(e.content, rawKnown).length === 0) {
+      results.set(e.id, localNutrition(known));
+    } else {
+      needAi.push(e);
     }
   }
 
-  // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
+  // ② 待估餐按日期批量问 AI（estimateAllMeals 内部按 10 餐分批、按日期分组，每批 1 次请求）
+  if (needAi.length > 0) {
+    const batch = await estimateAllMeals(needAi, ctx, cfg, (d) => onEach?.(results.size + d, total));
+    if (batch.status === 'nokey') {
+      // 没配模型：待估餐全部标失败，已本地算的仍保留
+      const list0 = await getMeals();
+      const next0 = list0.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
+      await saveMeals(next0);
+      return { entries: next0, success: results.size, total, failedMeals: needAi };
+    }
+    batch.results.forEach((v, k) => results.set(k, v));
+  }
+
+  // ④ 合并保存（重新读一次，避免覆盖估算期间用户的新增/修改）
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
   await saveMeals(next);
@@ -846,9 +820,15 @@ export const estimateDayMeals = async (
   return { entries: next, success: results.size, total, failedMeals };
 };
 
-// 批量估算「缺营养」的餐（用于统计中心一键补全）。
-// 优先走 1 次打包请求（estimateAllMeals，内部按日期分组、每 10 餐一批），
-// 让模型对每餐分别独立判断；批量完全失败时逐餐兜底 1 次保底。返回成功估算的餐数。
+// 估算某天全部餐（首页「AI 估算今日营养」按钮）。统一走 estimateCore。
+export const estimateDayMeals = (
+  entries: MealEntry[],
+  onEach?: (done: number, total: number) => void,
+  ctx?: MealCtxInput,
+  cfg?: ModelConfig,
+) => estimateCore(entries, onEach, ctx, cfg);
+
+// 批量估算「缺营养」的餐（统计中心一键补全）。同样走统一入口，返回成功估算的餐数。
 export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
@@ -857,30 +837,8 @@ export const estimateMissingMeals = async (
 ): Promise<number> => {
   const missing = entries.filter((m) => m.content && m.content.trim() && !m.nutrition);
   if (missing.length === 0) return 0;
-  if (onEach) onEach(0, missing.length);
-
-  const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
-  if (batch.status === 'nokey') return 0;
-  let results = batch.results;
-
-  // 保底：批量完全失败时逐餐补 1 次
-  if (results.size === 0 && missing.length > 0) {
-    console.warn('[Nutrition] 批量补全失败，启动逐餐兜底保底');
-    const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(missing.map((e) => e.date))));
-    for (const e of missing) {
-      try {
-        const { result } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
-        if (result) results.set(e.id, result);
-      } catch {}
-      onEach?.(results.size, missing.length);
-    }
-  }
-
-  if (results.size === 0) return 0;
-  const list = await getMeals();
-  const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
-  await saveMeals(next);
-  return results.size;
+  const r = await estimateCore(missing, onEach, ctx, cfg);
+  return r.success;
 };
 
 // 基于已记录的三餐与当前摄入，生成「今日/区间饮食调整方案」的个性化建议
