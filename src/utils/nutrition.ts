@@ -682,7 +682,11 @@ const requestMealBatch = async (
         applyKnownFoods(n, e.knownFoods); // 用食物库准确值覆盖已知食物
         results.set(e.id, n);
       });
-      if (results.size === 0) throw new Error('模型返回里没有可解析的各餐营养结果');
+      if (results.size === 0) {
+        // 诊断日志：帮助定位为什么批量解析全空（token 已消耗但没拿到结果）
+        console.error('[Nutrition] 批量解析全部为空，原始返回:', String(content).slice(0, 800));
+        throw new Error('模型返回里没有可解析的各餐营养结果');
+      }
       return { results, status: 'ok' };
     } catch (e: any) {
       const isRate = e?.message && String(e.message).includes('429');
@@ -739,7 +743,8 @@ export const estimateAllMeals = async (
 
 // 估算某天全部餐。
 // 设计：把所有餐次 + 当日运动信息打包成 **1 次**请求（estimateAllMeals），
-// 让模型对每一餐分别独立判断，一次返回每餐各自的营养。不再逐餐兜底 / 重试。
+// 让模型对每一餐分别独立判断，一次返回每餐各自的营养。
+// 仅当批量**完全失败**（0 餐解析到）时，逐餐兜底 1 次保底（不重试第 2 轮）。
 // 返回成功/失败数，失败餐列表交给调用方弹提示。
 export const estimateDayMeals = async (
   entries: MealEntry[],
@@ -758,7 +763,21 @@ export const estimateDayMeals = async (
     const list0 = await getMeals();
     return { entries: list0, success: 0, total, failedMeals: valid };
   }
-  const results = batch.results;
+  let results = batch.results;
+
+  // 保底：批量完全失败（0 餐解析到）时，逐餐补 1 次（estimateMealNutrition 内部已有 429 重试）
+  // 正常情况不会走到这里；只在模型返回格式异常等极端情况触发
+  if (results.size === 0 && valid.length > 0) {
+    console.warn('[Nutrition] 批量完全失败，启动逐餐兜底保底');
+    const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(valid.map((e) => e.date))));
+    for (const e of valid) {
+      try {
+        const { result } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
+        if (result) results.set(e.id, result);
+      } catch {}
+      onEach?.(results.size, total);
+    }
+  }
 
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
   const list = await getMeals();
@@ -769,8 +788,8 @@ export const estimateDayMeals = async (
 };
 
 // 批量估算「缺营养」的餐（用于统计中心一键补全）。
-// 同样只走 1 次打包请求（estimateAllMeals，内部按日期分组、每 10 餐一批），
-// 让模型对每餐分别独立判断，不逐餐兜底/重试。返回成功估算的餐数。
+// 优先走 1 次打包请求（estimateAllMeals，内部按日期分组、每 10 餐一批），
+// 让模型对每餐分别独立判断；批量完全失败时逐餐兜底 1 次保底。返回成功估算的餐数。
 export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
@@ -783,11 +802,26 @@ export const estimateMissingMeals = async (
 
   const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
   if (batch.status === 'nokey') return 0;
-  if (batch.results.size === 0) return 0;
+  let results = batch.results;
+
+  // 保底：批量完全失败时逐餐补 1 次
+  if (results.size === 0 && missing.length > 0) {
+    console.warn('[Nutrition] 批量补全失败，启动逐餐兜底保底');
+    const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(missing.map((e) => e.date))));
+    for (const e of missing) {
+      try {
+        const { result } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
+        if (result) results.set(e.id, result);
+      } catch {}
+      onEach?.(results.size, missing.length);
+    }
+  }
+
+  if (results.size === 0) return 0;
   const list = await getMeals();
-  const next = list.map((m) => (batch.results.has(m.id) ? { ...m, nutrition: batch.results.get(m.id) } : m));
+  const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
   await saveMeals(next);
-  return batch.results.size;
+  return results.size;
 };
 
 // 基于已记录的三餐与当前摄入，生成「今日/区间饮食调整方案」的个性化建议
