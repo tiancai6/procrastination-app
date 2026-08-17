@@ -515,10 +515,9 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
 };
 
 // ============ 把一整天的餐次打包成一个请求，让模型对每餐分别独立计算 ============
-// 用户常一天记 3~5 餐，逐餐并发打过去既慢又容易触发免费接口限流(429)。
-// 这里改为一次请求把全部餐次喂给模型，要求它按编号 1..N 对每餐分别独立估算，
-// 返回 { "1": {...}, "2": {...} } 的逐餐 JSON。只有「组合请求整体失败/被截断/漏算」
-// 时，才退回 estimateDayMeals 里的逐餐兜底，保证不丢餐。
+// 设计：一次请求把全部餐次 + 运动信息喂给模型，要求它按编号 1..N 对每餐分别独立估算，
+// 返回 { "1": {...}, "2": {...} } 的逐餐 JSON（解析兼容单餐不带编号 / 数组，见 requestMealBatch）。
+// 整个估算只发这一次请求，不再逐餐兜底或重试——一次拿全，省 token。
 const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一批餐次**（早/午/晚/加餐，加餐可能有多条）。
 这批餐**可能全部属于同一天，也可能横跨好几个不同日期**（用户攒了几天一起补记），用户会用「—— 日期 ——」把它们分组标明。
 请对每一餐**分别独立估算**营养，再把所有餐的结果汇总成一个 JSON 对象返回（不要输出任何 JSON 以外的文字）。
@@ -660,15 +659,26 @@ const requestMealBatch = async (
         : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch, feature: '三餐估算(批量)' });
       const raw = parseJsonContent(content);
       const results = new Map<string, MealNutrition>();
-      idxToEntry.forEach((e, i) => {
-        const part = raw?.[String(i)];
-        if (!part) return; // 模型漏算这餐 → 交给逐餐兜底
-        const n = normalizeNutrition(part);
-        // 空结果保护：与单餐一致，模型返回全 0 且无明细视为失败，不入库，走兜底
+      // 兼容模型返回的几种结构（设计上只要「一次请求、每餐单独判断」）：
+      // ① 编号对象 { "1": {...}, "2": {...} } —— 预期格式
+      // ② 数组 [ {...}, {...} ] —— 多餐时模型偶尔直接返回数组
+      // ③ 单餐直接返回 { meal, items, ... }（不带编号 key，1 餐最容易出现）→ 当作第 1 餐
+      const pickOne = (obj: any): MealNutrition | null => {
+        if (!obj || typeof obj !== 'object') return null;
+        const n = normalizeNutrition(obj);
         const isEmpty =
           (!n.items || n.items.length === 0) &&
           n.calories === 0 && n.protein === 0 && n.carbs === 0 && n.fat === 0 && n.fiber === 0;
-        if (isEmpty) return;
+        return isEmpty ? null : n;
+      };
+      const useArray = Array.isArray(raw);
+      const singleObj = !useArray && !raw?.[String(1)] && chunk.length === 1 ? raw : null;
+      idxToEntry.forEach((e, i) => {
+        let part: any = useArray ? raw[i - 1] : raw?.[String(i)];
+        if (chunk.length === 1 && !part && singleObj) part = singleObj; // 单餐兼容
+        if (!part) return; // 模型确实漏算这餐
+        const n = pickOne(part);
+        if (!n) return;
         applyKnownFoods(n, e.knownFoods); // 用食物库准确值覆盖已知食物
         results.set(e.id, n);
       });
@@ -727,42 +737,9 @@ export const estimateAllMeals = async (
   return { results, status: 'ok', message: lastMsg };
 };
 
-// 并发估算多餐。免费 GLM 接口有频率上限，并发太高会触发 429 限流，
-// 这里把并发控制在 2：既比「一餐等完再下一餐」快很多（4 餐≈2 次往返），
-// 又不至于一次性把免费额度打爆。配合 estimateMealNutrition 内部的 429 自动重试，体感顺滑。
-const CONCURRENCY = 2;
-
-const estimateInParallel = async (
-  targets: MealEntry[],
-  onEach?: (done: number, total: number) => void,
-  ctx?: MealCtxInput,
-  cfg?: ModelConfig,
-): Promise<{ results: Map<string, MealNutrition>; failures: Map<string, { status: string; message?: string }> }> => {
-  const results = new Map<string, MealNutrition>();
-  const failures = new Map<string, { status: string; message?: string }>();
-  // 逐餐兜底同样按「餐所属日期」取当天的运动上下文，跨天补记不会串用别天的数据
-  const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(targets.map((e) => e.date))));
-  let done = 0;
-  let cursor = 0;
-
-  const worker = async () => {
-    while (cursor < targets.length) {
-      const e = targets[cursor++];
-      const { result, status, message } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
-      if (result) results.set(e.id, result);
-      else failures.set(e.id, { status: status || 'error', message });
-      done += 1;
-      onEach?.(done, targets.length);
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker));
-  return { results, failures };
-};
-
 // 估算某天全部餐。
-// 首选「一次请求打包全部餐次」(estimateAllMeals)，让模型对每餐分别独立计算，更快且不易限流；
-// 该请求整体失败/被截断/漏算的餐，再退回逐餐并发估算 + 失败重试一轮兜底，保证不丢餐。
+// 设计：把所有餐次 + 当日运动信息打包成 **1 次**请求（estimateAllMeals），
+// 让模型对每一餐分别独立判断，一次返回每餐各自的营养。不再逐餐兜底 / 重试。
 // 返回成功/失败数，失败餐列表交给调用方弹提示。
 export const estimateDayMeals = async (
   entries: MealEntry[],
@@ -773,46 +750,15 @@ export const estimateDayMeals = async (
   const valid = entries.filter((e) => e.content && e.content.trim());
   const total = valid.length;
   if (total === 0) return { entries, success: 0, total: 0, failedMeals: [] };
-
-  // 第一轮：少量餐（≤2）直接逐餐估算，不走批量。
-  // 原因：批量把 1~2 餐也包成「编号1/2」的格式发给模型，反而容易漏算或解析失败，
-  // 导致后续还要走逐餐兜底+重试 → 1 餐可能触发 3 次请求（批量+兜底+重试），浪费 token。
-  // 3 餐以上才走批量，此时打包确实能减少请求数。
-  let results = new Map<string, MealNutrition>();
   if (onEach) onEach(0, total);
 
-  if (total <= 2) {
-    // 少量餐：直接逐餐，不经过批量包装
-    const direct = await estimateInParallel(valid, onEach, ctx, cfg);
-    direct.results.forEach((v, k) => results.set(k, v));
-    // 逐餐失败的再重试一轮
-    if (direct.failures.size > 0) {
-      const retryTargets = valid.filter((e) => direct.failures.has(e.id));
-      const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-      round2.results.forEach((v, k) => results.set(k, v));
-    }
-  } else {
-    // 多餐：走打包请求（自动分批），让模型对每餐分别独立计算
-    const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
-    if (batch.status === 'nokey') {
-      const list0 = await getMeals();
-      return { entries: list0, success: 0, total, failedMeals: valid };
-    }
-    if (batch.status === 'ok') results = batch.results;
-
-    // 组合请求没覆盖到的餐（模型漏算/整体失败/JSON 截断）→ 退回逐餐并发估算，失败再重试一轮
-    const missing = valid.filter((e) => !results.has(e.id));
-    if (missing.length > 0) {
-      let parallel = await estimateInParallel(missing, onEach, ctx, cfg);
-      if (parallel.failures.size > 0) {
-        const retryTargets = missing.filter((e) => parallel.failures.has(e.id));
-        const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-        round2.results.forEach((v, k) => parallel.results.set(k, v));
-        round2.failures.forEach((v, k) => parallel.failures.set(k, v));
-      }
-      parallel.results.forEach((v, k) => results.set(k, v));
-    }
+  // 只走这一次批量请求：餐次 + 运动信息一起发给模型，模型对每餐单独判断
+  const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
+  if (batch.status === 'nokey') {
+    const list0 = await getMeals();
+    return { entries: list0, success: 0, total, failedMeals: valid };
   }
+  const results = batch.results;
 
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
   const list = await getMeals();
@@ -823,9 +769,8 @@ export const estimateDayMeals = async (
 };
 
 // 批量估算「缺营养」的餐（用于统计中心一键补全）。
-// 这里常常是「攒了好几天没估算」的场景：跨日期、餐数多。
-// 走与单日相同的打包路径（按日期分组、每 10 餐一个请求），漏算/失败的餐再逐餐兜底，
-// 避免以前 15 餐打 15 个请求、又慢又容易被限流的问题。返回成功估算的餐数。
+// 同样只走 1 次打包请求（estimateAllMeals，内部按日期分组、每 10 餐一批），
+// 让模型对每餐分别独立判断，不逐餐兜底/重试。返回成功估算的餐数。
 export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
@@ -836,42 +781,13 @@ export const estimateMissingMeals = async (
   if (missing.length === 0) return 0;
   if (onEach) onEach(0, missing.length);
 
-  const results = new Map<string, MealNutrition>();
-  const total = missing.length;
-
-  if (total <= 2) {
-    // 少量餐直接逐餐，不走批量（同 estimateDayMeals 的优化理由）
-    const direct = await estimateInParallel(missing, onEach, ctx, cfg);
-    direct.results.forEach((v, k) => results.set(k, v));
-    if (direct.failures.size > 0) {
-      const retryTargets = missing.filter((e) => direct.failures.has(e.id));
-      const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-      round2.results.forEach((v, k) => results.set(k, v));
-    }
-  } else {
-    // 多餐走打包
-    const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
-    if (batch.status === 'nokey') return 0;
-    if (batch.status === 'ok') batch.results.forEach((v, k) => results.set(k, v));
-
-    // 打包请求漏算/失败的餐 → 逐餐兜底，失败再重试一轮
-    const left = missing.filter((e) => !results.has(e.id));
-    if (left.length > 0) {
-      const parallel = await estimateInParallel(left, onEach, ctx, cfg);
-      if (parallel.failures.size > 0) {
-        const retryTargets = left.filter((e) => parallel.failures.has(e.id));
-        const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-        round2.results.forEach((v, k) => parallel.results.set(k, v));
-      }
-      parallel.results.forEach((v, k) => results.set(k, v));
-    }
-  }
-
-  if (results.size === 0) return 0;
+  const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
+  if (batch.status === 'nokey') return 0;
+  if (batch.results.size === 0) return 0;
   const list = await getMeals();
-  const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
+  const next = list.map((m) => (batch.results.has(m.id) ? { ...m, nutrition: batch.results.get(m.id) } : m));
   await saveMeals(next);
-  return results.size;
+  return batch.results.size;
 };
 
 // 基于已记录的三餐与当前摄入，生成「今日/区间饮食调整方案」的个性化建议
