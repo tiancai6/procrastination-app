@@ -11,6 +11,7 @@ export interface CallOpts {
   maxTokens?: number;
   forceSearch?: boolean; // 即便模型未勾选「联网搜索」，本轮也强制联网
   feature?: string; // 调用来源标签（三餐估算/运动消耗/AI对话…），用于用量记录
+  jsonMode?: boolean; // 要求 API 以 json_object 模式返回，强制合法 JSON，降低「模型不按格式返回」导致解析失败的概率
 }
 
 type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
@@ -75,6 +76,9 @@ const buildBody = (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts, strea
   };
   const tools = buildTools(cfg, opts.forceSearch);
   if (tools) body.tools = tools;
+  // JSON 模式：让 API 强制返回合法 JSON 对象，降低「模型不按格式返回」导致解析失败的概率。
+  // 注意：OpenAI 兼容接口禁止 json_object 与 tools 同时出现，故仅在无 tools 时附加，避免 400。
+  if (opts.jsonMode && !tools) body.response_format = { type: 'json_object' };
   return body;
 };
 
@@ -177,6 +181,8 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     max_output_tokens: opts.maxTokens ?? 1000,
   };
   if (instructions) body.instructions = instructions;
+  // JSON 模式（火山 Responses API 同样兼容 response_format）。与 web_search 工具冲突时跳过，避免 400。
+  if (opts.jsonMode && !body.tools) body.response_format = { type: 'json_object' };
 
   const res = await fetch(url, {
     method: 'POST',

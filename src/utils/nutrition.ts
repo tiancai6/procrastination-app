@@ -474,8 +474,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: true, feature: '三餐估算' })
-        : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 2000, forceSearch: needSearch, feature: '三餐估算' });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 2000, forceSearch: true, jsonMode: true, feature: '三餐估算' })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 2000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算' });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
@@ -712,8 +712,8 @@ const requestMealBatch = async (
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: true, feature: '三餐估算(批量)' })
-        : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch, feature: '三餐估算(批量)' });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: true, jsonMode: true, feature: '三餐估算(批量)' })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: needSearch, jsonMode: true, feature: '三餐估算(批量)' });
       const raw = parseJsonContent(content);
       const results = extractBatchMeals(raw, chunk, idxToEntry);
       if (results.size === 0) {
