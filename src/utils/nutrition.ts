@@ -774,27 +774,44 @@ export const estimateDayMeals = async (
   const total = valid.length;
   if (total === 0) return { entries, success: 0, total: 0, failedMeals: [] };
 
-  // 第一轮：打包请求（餐多时自动分批），让模型对每餐分别独立计算
+  // 第一轮：少量餐（≤2）直接逐餐估算，不走批量。
+  // 原因：批量把 1~2 餐也包成「编号1/2」的格式发给模型，反而容易漏算或解析失败，
+  // 导致后续还要走逐餐兜底+重试 → 1 餐可能触发 3 次请求（批量+兜底+重试），浪费 token。
+  // 3 餐以上才走批量，此时打包确实能减少请求数。
   let results = new Map<string, MealNutrition>();
   if (onEach) onEach(0, total);
-  const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
-  if (batch.status === 'nokey') {
-    const list0 = await getMeals();
-    return { entries: list0, success: 0, total, failedMeals: valid };
-  }
-  if (batch.status === 'ok') results = batch.results;
 
-  // 组合请求没覆盖到的餐（模型漏算/整体失败/JSON 截断）→ 退回逐餐并发估算，失败再重试一轮
-  const missing = valid.filter((e) => !results.has(e.id));
-  if (missing.length > 0) {
-    let parallel = await estimateInParallel(missing, onEach, ctx, cfg);
-    if (parallel.failures.size > 0) {
-      const retryTargets = missing.filter((e) => parallel.failures.has(e.id));
+  if (total <= 2) {
+    // 少量餐：直接逐餐，不经过批量包装
+    const direct = await estimateInParallel(valid, onEach, ctx, cfg);
+    direct.results.forEach((v, k) => results.set(k, v));
+    // 逐餐失败的再重试一轮
+    if (direct.failures.size > 0) {
+      const retryTargets = valid.filter((e) => direct.failures.has(e.id));
       const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-      round2.results.forEach((v, k) => parallel.results.set(k, v));
-      round2.failures.forEach((v, k) => parallel.failures.set(k, v));
+      round2.results.forEach((v, k) => results.set(k, v));
     }
-    parallel.results.forEach((v, k) => results.set(k, v));
+  } else {
+    // 多餐：走打包请求（自动分批），让模型对每餐分别独立计算
+    const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
+    if (batch.status === 'nokey') {
+      const list0 = await getMeals();
+      return { entries: list0, success: 0, total, failedMeals: valid };
+    }
+    if (batch.status === 'ok') results = batch.results;
+
+    // 组合请求没覆盖到的餐（模型漏算/整体失败/JSON 截断）→ 退回逐餐并发估算，失败再重试一轮
+    const missing = valid.filter((e) => !results.has(e.id));
+    if (missing.length > 0) {
+      let parallel = await estimateInParallel(missing, onEach, ctx, cfg);
+      if (parallel.failures.size > 0) {
+        const retryTargets = missing.filter((e) => parallel.failures.has(e.id));
+        const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
+        round2.results.forEach((v, k) => parallel.results.set(k, v));
+        round2.failures.forEach((v, k) => parallel.failures.set(k, v));
+      }
+      parallel.results.forEach((v, k) => results.set(k, v));
+    }
   }
 
   // 估算期间用户可能又改了记录，这里重新读一次再合并，避免覆盖掉新内容
@@ -820,20 +837,34 @@ export const estimateMissingMeals = async (
   if (onEach) onEach(0, missing.length);
 
   const results = new Map<string, MealNutrition>();
-  const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
-  if (batch.status === 'nokey') return 0;
-  if (batch.status === 'ok') batch.results.forEach((v, k) => results.set(k, v));
+  const total = missing.length;
 
-  // 打包请求漏算/失败的餐 → 逐餐兜底，失败再重试一轮
-  const left = missing.filter((e) => !results.has(e.id));
-  if (left.length > 0) {
-    const parallel = await estimateInParallel(left, onEach, ctx, cfg);
-    if (parallel.failures.size > 0) {
-      const retryTargets = left.filter((e) => parallel.failures.has(e.id));
+  if (total <= 2) {
+    // 少量餐直接逐餐，不走批量（同 estimateDayMeals 的优化理由）
+    const direct = await estimateInParallel(missing, onEach, ctx, cfg);
+    direct.results.forEach((v, k) => results.set(k, v));
+    if (direct.failures.size > 0) {
+      const retryTargets = missing.filter((e) => direct.failures.has(e.id));
       const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
-      round2.results.forEach((v, k) => parallel.results.set(k, v));
+      round2.results.forEach((v, k) => results.set(k, v));
     }
-    parallel.results.forEach((v, k) => results.set(k, v));
+  } else {
+    // 多餐走打包
+    const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
+    if (batch.status === 'nokey') return 0;
+    if (batch.status === 'ok') batch.results.forEach((v, k) => results.set(k, v));
+
+    // 打包请求漏算/失败的餐 → 逐餐兜底，失败再重试一轮
+    const left = missing.filter((e) => !results.has(e.id));
+    if (left.length > 0) {
+      const parallel = await estimateInParallel(left, onEach, ctx, cfg);
+      if (parallel.failures.size > 0) {
+        const retryTargets = left.filter((e) => parallel.failures.has(e.id));
+        const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
+        round2.results.forEach((v, k) => parallel.results.set(k, v));
+      }
+      parallel.results.forEach((v, k) => results.set(k, v));
+    }
   }
 
   if (results.size === 0) return 0;
