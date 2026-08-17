@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 
 // ============ AI 调用用量记录 ============
 // 每次调用 AI（三餐估算 / 运动消耗 / AI 对话 / 饮食建议 / 食物分析）后，
@@ -69,4 +71,42 @@ export const summarizeAiUsage = (list: AiUsageRecord[]): UsageSummary => {
     s.byFeature[r.feature] = (s.byFeature[r.feature] || 0) + r.totalTokens;
   }
   return s;
+};
+
+export interface AiUsageExportFile {
+  app: string;
+  exportedAt: string;
+  summary: UsageSummary;
+  records: AiUsageRecord[];
+}
+
+// 单独导出 AI 用量记录：生成一份 JSON（含汇总 + 原始明细）并通过系统分享面板保存/发送。
+// 返回文件名；若没有任何记录则返回 null（调用方提示「无数据」）。
+export const exportAiUsage = async (): Promise<string | null> => {
+  const list = await getAiUsageLog();
+  if (list.length === 0) return null;
+
+  const file: AiUsageExportFile = {
+    app: 'dailytrace',
+    exportedAt: new Date().toISOString(),
+    summary: summarizeAiUsage(list),
+    records: list,
+  };
+
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const fileName = `日迹AI用量记录-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+  const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+
+  const jsonStr = JSON.stringify(file, null, 2);
+  await FileSystem.writeAsStringAsync(fileUri, jsonStr, { encoding: FileSystem.EncodingType.UTF8 });
+
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(fileUri, {
+      mimeType: 'application/json',
+      dialogTitle: '导出 AI 用量记录',
+      UTI: 'public.json',
+    });
+  }
+  return fileName;
 };

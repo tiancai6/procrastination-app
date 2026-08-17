@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal } fr
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
-import { getAiUsageLog, clearAiUsageLog, AiUsageRecord } from '../utils/usage';
+import { getAiUsageLog, clearAiUsageLog, exportAiUsage, AiUsageRecord } from '../utils/usage';
 
 const BRAND_COLORS: Record<string, string> = {
   glm: '#4F46E5',
@@ -79,6 +79,17 @@ const AiUsagePage: React.FC<Props> = ({ visible, onClose }) => {
     ]);
   };
 
+  const handleExport = async () => {
+    try {
+      const fileName = await exportAiUsage();
+      if (!fileName) {
+        Alert.alert('没有数据', '当前还没有任何 AI 调用记录，无法导出');
+      }
+    } catch (e: any) {
+      Alert.alert('导出失败', e?.message ? String(e.message) : '未知错误');
+    }
+  };
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.root}>
@@ -87,9 +98,14 @@ const AiUsagePage: React.FC<Props> = ({ visible, onClose }) => {
             <Ionicons name="chevron-down" size={26} color={COLORS.text} />
           </TouchableOpacity>
           <Text style={styles.title}>AI 用量记录</Text>
-          <TouchableOpacity onPress={load} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Ionicons name="refresh-outline" size={22} color={COLORS.primary} />
-          </TouchableOpacity>
+          <View style={styles.headerRight}>
+            <TouchableOpacity onPress={handleExport} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="download-outline" size={22} color={COLORS.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={load} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="refresh-outline" size={22} color={COLORS.primary} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView style={styles.body} contentContainerStyle={{ padding: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
@@ -192,6 +208,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
   title: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   body: { flex: 1 },
   empty: { alignItems: 'center', marginTop: 70, paddingHorizontal: 30 },
   emptyText: { fontSize: 15, color: COLORS.textLight, marginTop: 12 },
