@@ -10,3 +10,4 @@ npm-debug.log*
 
 # expo export 产物
 dist/
+dist-export/

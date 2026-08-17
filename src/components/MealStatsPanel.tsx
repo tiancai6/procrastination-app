@@ -22,8 +22,10 @@ import {
   PROTEIN_TARGET,
   CALORIE_TARGET,
   NUTRITION_TARGETS,
+  MealContext,
 } from '../utils/nutrition';
-import { getApiKey } from '../utils/storage';
+import { getApiKey, getBodyProfile } from '../utils/storage';
+import { calcDayEnergy } from '../utils/activity';
 import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import { onDataReset, emitDataReset } from '../utils/appEvents';
 import NutritionDetail from './NutritionDetail';
@@ -37,6 +39,28 @@ const MEAL_LABEL: Record<MealType, string> = { breakfast: '早餐', lunch: '午�
 const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 
 const ADEQUACY_COLOR: Record<string, string> = { 不足: '#F59E0B', 适量: '#22C55E', 过量: '#EF4444' };
+
+// 为「一次性补算好几天」准备每一天的身体/运动上下文（BMR、当天运动消耗、当天 TDEE）。
+// 逐天算，避免把某一天的运动情况套到所有日期上，导致 adequacy 判断失真。
+const buildMealContextByDates = async (dates: string[]): Promise<Record<string, MealContext> | undefined> => {
+  try {
+    const p = await getBodyProfile();
+    const out: Record<string, MealContext> = {};
+    for (const date of dates) {
+      const energy = await calcDayEnergy(date);
+      out[date] = {
+        bmr: energy.bmr,
+        weight: p?.weight ?? 0,
+        tdee: energy.tdee,
+        exerciseKcal: energy.exerciseKcal,
+        baseLevel: energy.baseLevel,
+      };
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
+};
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const toDateStr = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -406,10 +430,15 @@ const MealStatsPanel: React.FC = () => {
     }
     setEstimating(true);
     setEstProgress(`估算中 0/${mealsWithoutNutrition.length}`);
+    // 补记往期常常横跨好几天：给每一天各自的运动/TDEE 上下文，
+    // 让 AI 按「那一天」的消耗判断这餐是否合适，而不是全部套今天的数据。
+    const ctxByDate = await buildMealContextByDates(
+      Array.from(new Set(mealsWithoutNutrition.map((m) => m.date))),
+    );
     await estimateMissingMeals(
       allMeals,
       (done, total) => setEstProgress(`估算中 ${done}/${total}`),
-      undefined,
+      ctxByDate,
       selCfg,
     );
     setEstimating(false);

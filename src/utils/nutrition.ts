@@ -97,14 +97,17 @@ const BASE_LEVEL_LABEL: Record<MealContext['baseLevel'], string> = {
   high: '高强度活动',
 };
 
-// 把当日身体/运动数据拼成一段中文，注入营养估算 prompt。
-const buildMealContextText = (ctx: MealContext): string => {
+// 把某一天的身体/运动数据拼成一段中文，注入营养估算 prompt。
+// date 省略或等于今天 → 说「今日」；补记往期 → 说具体日期，避免模型误判成今天。
+const buildMealContextText = (ctx: MealContext, date?: string): string => {
+  const isToday = !date || date === todayStr();
+  const dayWord = isToday ? '今日' : `${date} 当日`;
   const parts: string[] = [];
-  parts.push('【今日身体与运动情况，用于判断这顿饭是否合适】');
+  parts.push(`【${dayWord}身体与运动情况，用于判断这顿饭是否合适】`);
   parts.push('- 基础代谢(BMR)：约 ' + ctx.bmr + ' kcal');
-  parts.push('- 今日运动消耗：约 ' + ctx.exerciseKcal + ' kcal（基础活动强度：' + BASE_LEVEL_LABEL[ctx.baseLevel] + '）');
-  parts.push('- 今日可摄入总量(TDEE，含运动)：约 ' + ctx.tdee + ' kcal');
-  parts.push('请结合「今日可摄入总量 ' + ctx.tdee + ' kcal」判断这顿饭的 adequacy：运动消耗大可放宽、久坐少动要更克制；在 comment 里点明这顿与今日运动是否匹配、建议多吃还是少吃。');
+  parts.push(`- ${dayWord}运动消耗：约 ` + ctx.exerciseKcal + ' kcal（基础活动强度：' + BASE_LEVEL_LABEL[ctx.baseLevel] + '）');
+  parts.push(`- ${dayWord}可摄入总量(TDEE，含运动)：约 ` + ctx.tdee + ' kcal');
+  parts.push(`请结合「${dayWord}可摄入总量 ` + ctx.tdee + ` kcal」判断这顿饭的 adequacy：运动消耗大可放宽、久坐少动要更克制；在 comment 里点明这顿与${dayWord}运动是否匹配、建议多吃还是少吃。`);
   return parts.join('\n');
 };
 
@@ -130,6 +133,32 @@ export const MEAL_LABEL: Record<MealType, string> = {
   lunch: '午餐',
   dinner: '晚餐',
   snack: '加餐',
+};
+
+// ============ 日期措辞（补记多天时不能再一律说「今天」）============
+// 之前 prompt 固定写「这是今天的早餐」，用户攒了好几天一次性估算时，
+// 模型会把 5 天的饭都当成同一天，adequacy（不足/适量/过量）判断整体失真。
+const WEEK_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+const todayStr = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// 「今天的」/「2026-08-12（周三）的」
+const mealDateLabel = (date?: string): string => {
+  if (!date) return '今天的';
+  if (date === todayStr()) return '今天的';
+  const d = new Date(date + 'T00:00:00');
+  if (isNaN(d.getTime())) return `${date} 的`;
+  return `${date}（${WEEK_CN[d.getDay()]}）的`;
+};
+
+// 日期块标题：「2026-08-12（周三）」，今天额外标注
+const dateHeading = (date: string): string => {
+  const d = new Date(date + 'T00:00:00');
+  const wk = isNaN(d.getTime()) ? '' : `（${WEEK_CN[d.getDay()]}）`;
+  return date === todayStr() ? `${date}${wk}·今天` : `${date}${wk}`;
 };
 
 // ============ 三餐记录存储 ============
@@ -437,7 +466,7 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
     { role: 'system' as const, content: NUTRITION_SYSTEM_PROMPT },
     {
       role: 'user' as const,
-      content: `这是今天的${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
+      content: `这是${mealDateLabel(entry.date)}${MEAL_LABEL[entry.type]}：${entry.content}${ctx ? '\n' + buildMealContextText(ctx, entry.date) : ''}${knownText}\n请输出这顿的营养估算 JSON。`,
     },
   ];
 
@@ -490,7 +519,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
 // 这里改为一次请求把全部餐次喂给模型，要求它按编号 1..N 对每餐分别独立估算，
 // 返回 { "1": {...}, "2": {...} } 的逐餐 JSON。只有「组合请求整体失败/被截断/漏算」
 // 时，才退回 estimateDayMeals 里的逐餐兜底，保证不丢餐。
-const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一整天吃的全部餐次**（早/午/晚/加餐，加餐可能有多条）。
+const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一批餐次**（早/午/晚/加餐，加餐可能有多条）。
+这批餐**可能全部属于同一天，也可能横跨好几个不同日期**（用户攒了几天一起补记），用户会用「—— 日期 ——」把它们分组标明。
 请对每一餐**分别独立估算**营养，再把所有餐的结果汇总成一个 JSON 对象返回（不要输出任何 JSON 以外的文字）。
 
 返回格式：顶层 key 用我给的编号（1、2、3…），每餐的值结构如下：
@@ -511,27 +541,52 @@ const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次�
 2. items 每一条都给出 protein/calories/fat/carbs/fiber 五个数字（无则填 0），name 带大致分量（如「鸡蛋 2个」）。
 3. 每一餐顶层的 protein/calories/fat/carbs/fiber **必须等于该餐 items 各项之和**（允许微小取整误差）。
 4. water 是该餐液体量(ml)，没有填 0。
-5. adequacy 按该餐占全天推荐量的合理比例判断（参考：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、纤维约25g、饮水约1500ml）。
-6. 若某餐消息里给了「当日身体与运动情况」（含今日可摄入总量TDEE），请据此判断 adequacy：运动消耗大可放宽、久坐少动要更克制，并在 comment 点明与今日运动是否匹配、建议多吃还是少吃。
+5. adequacy 按该餐占**它所属那一天**推荐量的合理比例判断（参考：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、纤维约25g、饮水约1500ml）。
+6. 若某个日期下给了「当日身体与运动情况」（含该日可摄入总量TDEE），该日期的每一餐都要据此判断 adequacy：运动消耗大可放宽、久坐少动要更克制，并在 comment 点明与当天运动是否匹配、建议多吃还是少吃。
 7. 编号必须与用户给出的餐次一一对应；即便某餐无法估算也要返回（items 为空、各项为 0）。
+8. **不同日期的餐互不相干，绝对不要把跨日期的餐加在一起算**：不要因为总条数多就把某一餐判成「过量」。每餐只和它所属那一天的全天推荐量对比。
 只输出 JSON。`;
 
-export const estimateAllMeals = async (
-  entries: MealEntry[],
-  ctx?: MealContext,
-  cfgOverride?: ModelConfig,
-): Promise<{ results: Map<string, MealNutrition>; status: 'ok' | 'nokey' | 'error' | 'rate'; message?: string }> => {
-  const cfg = cfgOverride || (await getActiveConfig(false));
-  if (!cfg) return { results: new Map(), status: 'nokey' };
-  const valid = entries.filter((e) => e.content && e.content.trim());
-  if (valid.length === 0) return { results: new Map(), status: 'ok' };
+// 运动上下文入参：单日场景直接传一个 MealContext；
+// 补记多天时传 { '2026-08-12': ctx, '2026-08-13': ctx } 按日期各给一份，避免把某天运动套到所有天。
+export type MealCtxInput = MealContext | Record<string, MealContext>;
 
+const normalizeCtxInput = (
+  input: MealCtxInput | undefined,
+  dates: string[],
+): Record<string, MealContext> => {
+  if (!input) return {};
+  if (typeof (input as MealContext).bmr === 'number') {
+    const single = input as MealContext;
+    if (dates.length <= 1) {
+      const out: Record<string, MealContext> = {};
+      dates.forEach((d) => (out[d] = single));
+      return out;
+    }
+    // 跨多天却只拿到一天的运动数据 → 宁可不注入，也不要把这一天的 TDEE 套到所有日期上误导模型
+    console.warn('[Nutrition] 跨多天估算只收到单日运动上下文，已忽略以免 adequacy 判断失真');
+    return {};
+  }
+  return input as Record<string, MealContext>;
+};
+
+// 每次请求最多打包多少餐：单餐 JSON 约 120~350 tokens，10 餐留足 4000 输出上限（GLM 等上限约 4096），
+// 攒了很多天时自动拆成多批串行发送，既不超上限被截断，也远少于「一餐一个请求」的次数。
+const BATCH_MEALS = 10;
+
+const knownScaledFor = (e: MealEntry) =>
+  e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k, e.content)) : null;
+
+// 一批餐 → 一个请求
+const requestMealBatch = async (
+  cfg: ModelConfig,
+  chunk: MealEntry[],
+  ctxMap: Record<string, MealContext>,
+): Promise<{ results: Map<string, MealNutrition>; status: 'ok' | 'error' | 'rate'; message?: string }> => {
   // 是否需要联网：任一一餐含「食物库没覆盖的食物」即联网
   let needSearch = false;
-  const knownFor = (e: MealEntry) =>
-    e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k, e.content)) : null;
-  valid.forEach((e) => {
-    const known = knownFor(e);
+  chunk.forEach((e) => {
+    const known = knownScaledFor(e);
     if (known && known.length) {
       let remaining = e.content;
       known.forEach((k) => {
@@ -545,29 +600,52 @@ export const estimateAllMeals = async (
     }
   });
 
-  // 拼每餐文本（含已知食物库的营养，让模型直接采用），编号 1..N
-  const mealBlocks = valid.map((e, i) => {
-    let block = `【${i + 1}】${MEAL_LABEL[e.type] || '餐'}：${e.content}`;
-    const known = knownFor(e);
-    if (known && known.length) {
-      const knownText = known
-        .map(
-          (k) =>
-            `- ${foodNameCore(k.name) || k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
-        )
-        .join('\n  ');
-      block += `\n  （本餐已知食物营养来自你的食物库，请直接采用这些数值、计入总和：\n  ${knownText}\n  ）`;
-    }
-    return block;
+  // 按日期分组（Map 保留插入顺序 = 已排好的日期顺序），编号在本批内全局连续 1..N
+  const groups = new Map<string, MealEntry[]>();
+  chunk.forEach((e) => {
+    const arr = groups.get(e.date) || [];
+    arr.push(e);
+    groups.set(e.date, arr);
+  });
+  const multiDate = groups.size > 1;
+
+  const sections: string[] = [];
+  const idxToEntry = new Map<number, MealEntry>();
+  let seq = 0;
+  groups.forEach((list, date) => {
+    const blocks = list.map((e) => {
+      seq += 1;
+      idxToEntry.set(seq, e);
+      let block = `【${seq}】${MEAL_LABEL[e.type] || '餐'}：${e.content}`;
+      const known = knownScaledFor(e);
+      if (known && known.length) {
+        const knownText = known
+          .map(
+            (k) =>
+              `- ${foodNameCore(k.name) || k.name}：蛋白 ${k.protein}g、热量 ${k.calories}kcal、脂肪 ${k.fat}g、碳水 ${k.carbs}g、纤维 ${k.fiber}g${k.water ? '、水 ' + k.water + 'ml' : ''}`,
+          )
+          .join('\n  ');
+        block += `\n  （本餐已知食物营养来自你的食物库，请直接采用这些数值、计入总和：\n  ${knownText}\n  ）`;
+      }
+      return block;
+    });
+    const dayCtx = ctxMap[date];
+    const ctxText = dayCtx ? '\n\n' + buildMealContextText(dayCtx, date) : '';
+    // 单日时不必加日期分隔条，保持提示简洁
+    const head = multiDate ? `—— ${dateHeading(date)}，共 ${list.length} 餐 ——\n\n` : '';
+    sections.push(head + blocks.join('\n\n') + ctxText);
   });
 
-  const ctxText = ctx ? '\n\n' + buildMealContextText(ctx) : '';
-  const userContent =
-    `今天共 ${valid.length} 餐，请分别估算每一餐的营养：\n\n` +
-    mealBlocks.join('\n\n') +
-    ctxText +
-    `\n\n请按上面编号 1..${valid.length} 返回每餐的营养 JSON（顶层 key 用编号）。`;
+  const intro = multiDate
+    ? `以下是 ${groups.size} 个不同日期、共 ${chunk.length} 餐（攒了几天一起补记），请按每餐所属日期分别独立估算：`
+    : `这是 ${dateHeading(Array.from(groups.keys())[0])} 的 ${chunk.length} 餐，请分别估算每一餐的营养：`;
+  const outro = multiDate
+    ? `\n\n请按上面编号 1..${chunk.length} 返回每餐的营养 JSON（顶层 key 用编号）。注意：不同日期的餐不要相加，每餐的 adequacy 只按它所属那一天的全天推荐量判断。`
+    : `\n\n请按上面编号 1..${chunk.length} 返回每餐的营养 JSON（顶层 key 用编号）。`;
+  const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
+  // 输出预算：按餐数动态给，避免多餐 JSON 被截断，又不超模型上限
+  const maxTokens = Math.min(4000, Math.max(1200, chunk.length * 350 + 400));
   const useResponses = cfg.brand === 'doubao' && needSearch;
   const messages = [
     { role: 'system' as const, content: NUTRITION_BATCH_SYSTEM_PROMPT },
@@ -578,12 +656,12 @@ export const estimateAllMeals = async (
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens: 4000, forceSearch: true })
-        : await postChat(cfg, messages, { temperature: 0.5, maxTokens: 4000, forceSearch: needSearch });
+        ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: true })
+        : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch });
       const raw = parseJsonContent(content);
       const results = new Map<string, MealNutrition>();
-      valid.forEach((e, i) => {
-        const part = raw?.[String(i + 1)];
+      idxToEntry.forEach((e, i) => {
+        const part = raw?.[String(i)];
         if (!part) return; // 模型漏算这餐 → 交给逐餐兜底
         const n = normalizeNutrition(part);
         // 空结果保护：与单餐一致，模型返回全 0 且无明细视为失败，不入库，走兜底
@@ -609,6 +687,46 @@ export const estimateAllMeals = async (
   return { results: new Map(), status: 'error' };
 };
 
+export const estimateAllMeals = async (
+  entries: MealEntry[],
+  ctx?: MealCtxInput,
+  cfgOverride?: ModelConfig,
+  onBatch?: (doneMeals: number, totalMeals: number) => void,
+): Promise<{ results: Map<string, MealNutrition>; status: 'ok' | 'nokey' | 'error' | 'rate'; message?: string }> => {
+  const cfg = cfgOverride || (await getActiveConfig(false));
+  if (!cfg) return { results: new Map(), status: 'nokey' };
+  const valid = entries.filter((e) => e.content && e.content.trim());
+  if (valid.length === 0) return { results: new Map(), status: 'ok' };
+
+  // 按日期升序排好，让同一天的餐挨在一起（也保证分批时不会把一天切得太碎）
+  const sorted = [...valid].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? -1 : 1));
+  const dates = Array.from(new Set(sorted.map((e) => e.date)));
+  const ctxMap = normalizeCtxInput(ctx, dates);
+
+  const results = new Map<string, MealNutrition>();
+  let lastStatus: 'ok' | 'error' | 'rate' = 'ok';
+  let lastMsg: string | undefined;
+  let done = 0;
+
+  // 多批串行发送（并发容易触发免费接口 429）
+  for (let i = 0; i < sorted.length; i += BATCH_MEALS) {
+    const chunk = sorted.slice(i, i + BATCH_MEALS);
+    const r = await requestMealBatch(cfg, chunk, ctxMap);
+    r.results.forEach((v, k) => results.set(k, v));
+    if (r.status !== 'ok') {
+      lastStatus = r.status;
+      lastMsg = r.message;
+    }
+    done += chunk.length;
+    onBatch?.(done, sorted.length);
+  }
+
+  if (results.size === 0) {
+    return { results, status: lastStatus === 'ok' ? 'error' : lastStatus, message: lastMsg };
+  }
+  return { results, status: 'ok', message: lastMsg };
+};
+
 // 并发估算多餐。免费 GLM 接口有频率上限，并发太高会触发 429 限流，
 // 这里把并发控制在 2：既比「一餐等完再下一餐」快很多（4 餐≈2 次往返），
 // 又不至于一次性把免费额度打爆。配合 estimateMealNutrition 内部的 429 自动重试，体感顺滑。
@@ -617,18 +735,20 @@ const CONCURRENCY = 2;
 const estimateInParallel = async (
   targets: MealEntry[],
   onEach?: (done: number, total: number) => void,
-  ctx?: MealContext,
+  ctx?: MealCtxInput,
   cfg?: ModelConfig,
 ): Promise<{ results: Map<string, MealNutrition>; failures: Map<string, { status: string; message?: string }> }> => {
   const results = new Map<string, MealNutrition>();
   const failures = new Map<string, { status: string; message?: string }>();
+  // 逐餐兜底同样按「餐所属日期」取当天的运动上下文，跨天补记不会串用别天的数据
+  const ctxMap = normalizeCtxInput(ctx, Array.from(new Set(targets.map((e) => e.date))));
   let done = 0;
   let cursor = 0;
 
   const worker = async () => {
     while (cursor < targets.length) {
       const e = targets[cursor++];
-      const { result, status, message } = await estimateMealNutrition(e, ctx, cfg);
+      const { result, status, message } = await estimateMealNutrition(e, ctxMap[e.date], cfg);
       if (result) results.set(e.id, result);
       else failures.set(e.id, { status: status || 'error', message });
       done += 1;
@@ -647,17 +767,17 @@ const estimateInParallel = async (
 export const estimateDayMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
-  ctx?: MealContext,
+  ctx?: MealCtxInput,
   cfg?: ModelConfig,
 ): Promise<{ entries: MealEntry[]; success: number; total: number; failedMeals: MealEntry[] }> => {
   const valid = entries.filter((e) => e.content && e.content.trim());
   const total = valid.length;
   if (total === 0) return { entries, success: 0, total: 0, failedMeals: [] };
 
-  // 第一轮：一次请求打包全部餐次（高效路径）
+  // 第一轮：打包请求（餐多时自动分批），让模型对每餐分别独立计算
   let results = new Map<string, MealNutrition>();
   if (onEach) onEach(0, total);
-  const batch = await estimateAllMeals(valid, ctx, cfg);
+  const batch = await estimateAllMeals(valid, ctx, cfg, (d, t) => onEach?.(d, t));
   if (batch.status === 'nokey') {
     const list0 = await getMeals();
     return { entries: list0, success: 0, total, failedMeals: valid };
@@ -685,15 +805,37 @@ export const estimateDayMeals = async (
   return { entries: next, success: results.size, total, failedMeals };
 };
 
-// 批量估算「缺营养」的餐（用于统计中心一键补全）。返回成功估算的餐数。
+// 批量估算「缺营养」的餐（用于统计中心一键补全）。
+// 这里常常是「攒了好几天没估算」的场景：跨日期、餐数多。
+// 走与单日相同的打包路径（按日期分组、每 10 餐一个请求），漏算/失败的餐再逐餐兜底，
+// 避免以前 15 餐打 15 个请求、又慢又容易被限流的问题。返回成功估算的餐数。
 export const estimateMissingMeals = async (
   entries: MealEntry[],
   onEach?: (done: number, total: number) => void,
-  ctx?: MealContext,
+  ctx?: MealCtxInput,
   cfg?: ModelConfig,
 ): Promise<number> => {
   const missing = entries.filter((m) => m.content && m.content.trim() && !m.nutrition);
-  const { results } = await estimateInParallel(missing, onEach, ctx, cfg);
+  if (missing.length === 0) return 0;
+  if (onEach) onEach(0, missing.length);
+
+  const results = new Map<string, MealNutrition>();
+  const batch = await estimateAllMeals(missing, ctx, cfg, (d, t) => onEach?.(d, t));
+  if (batch.status === 'nokey') return 0;
+  if (batch.status === 'ok') batch.results.forEach((v, k) => results.set(k, v));
+
+  // 打包请求漏算/失败的餐 → 逐餐兜底，失败再重试一轮
+  const left = missing.filter((e) => !results.has(e.id));
+  if (left.length > 0) {
+    const parallel = await estimateInParallel(left, onEach, ctx, cfg);
+    if (parallel.failures.size > 0) {
+      const retryTargets = left.filter((e) => parallel.failures.has(e.id));
+      const round2 = await estimateInParallel(retryTargets, undefined, ctx, cfg);
+      round2.results.forEach((v, k) => parallel.results.set(k, v));
+    }
+    parallel.results.forEach((v, k) => results.set(k, v));
+  }
+
   if (results.size === 0) return 0;
   const list = await getMeals();
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
