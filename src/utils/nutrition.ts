@@ -557,7 +557,7 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
 // 返回 { "1": {...}, "2": {...} } 的逐餐 JSON（解析兼容单餐不带编号 / 数组，见 requestMealBatch）。
 // 整个估算只发这一次请求，不再逐餐兜底或重试——一次拿全，省 token。
 const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次提供**一批餐次**（早/午/晚/加餐，加餐可能有多条），这些餐可能分属同一天或不同日期，用户会用「—— 日期 ——」分组标明。
-请对每一餐**分别独立估算**营养，最后**返回一个 JSON 数组**（不要输出任何 JSON 以外的文字），数组里每个元素按顺序对应上面列出的每一餐（第 1 个元素=【1】，第 2 个=【2】…）。
+请对每一餐**分别独立估算**营养，最后**返回一个 JSON 对象**，形如 {"results": [ 各餐元素... ]}，其中 "results" 数组的每个元素按顺序对应上面列出的每一餐（第 1 个元素=【1】，第 2 个=【2】…）。不要输出任何 JSON 以外的文字。
 
 数组每个元素的结构：
 {
@@ -576,7 +576,7 @@ const NUTRITION_BATCH_SYSTEM_PROMPT = `你是一位营养师。用户会一次�
 5. adequacy 按该餐占**它所属那一天**推荐量的合理比例判断（参考：蛋白约60g、热量约2000kcal、脂肪约60g、碳水约250g、纤维约25g、饮水约1500ml）。
 6. 若某个日期下给了「当日身体与运动情况」（含该日可摄入总量TDEE），该日期的每一餐都要据此判断 adequacy：运动消耗大可放宽、久坐少动要更克制，并在 comment 点明与当天运动是否匹配、建议多吃还是少吃。
 7. **不同日期的餐互不相干，绝对不要把跨日期的餐加在一起算**：每餐只和它所属那一天的全天推荐量对比。
-8. 严格返回 JSON 数组，顺序与各餐一一对应；即便某餐无法估算也要返回（items 为空、各项为 0）。
+8. 严格返回一个**顶层是对象**的 JSON（即 {"results": [...]}，不要返回裸数组）：results 数组顺序与各餐一一对应；即便某餐无法估算也要返回（items 为空、各项为 0）。
 只输出 JSON 数组。`;
 
 // 运动上下文入参：单日场景直接传一个 MealContext；
@@ -607,8 +607,13 @@ const normalizeCtxInput = (
 const BATCH_MEALS = 10;
 
 // 从模型批量返回里抽取每餐营养。
-// 简化后：prompt 要求模型返回「与各餐顺序一一对应的 JSON 数组」，这里按数组顺序映射到各餐即可。
-// 兼容两种形态：裸数组 [ {...}, {...} ]；或外层包了 meals/foods 数组；再兜底编号对象。
+// 模型在 json_object 模式下返回形态不定：裸数组 / {results:[...]} / {meals:[...]} / {早餐:{...}} / {"1":{...}} / 单餐对象 都可能出现。
+// 这里做成「尽量认」：先按数组定位，再按编号/餐次名兜底，保证「有返回就尽量解析出来」。
+const hasMealShape = (x: any): boolean => {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
+  return ['items', 'calories', 'protein', 'meal', 'type', 'name', 'adequacy', 'foods'].some((k) => k in x);
+};
+
 const extractBatchMeals = (
   raw: any,
   chunk: MealEntry[],
@@ -629,20 +634,82 @@ const extractBatchMeals = (
     results.set(e.id, n);
   };
 
-  // 形态1/2：数组（裸数组 或 外层包 meals/foods）
+  // 1) 单餐且返回的就是一份营养对象（json_object 下最常见）
+  if (chunk.length === 1 && raw && typeof raw === 'object' && !Array.isArray(raw) && !Object.values(raw).some((v) => Array.isArray(v))) {
+    setOne(chunk[0], raw);
+    if (results.size) return results;
+  }
+
+  // 2) 找「最像餐次数组」的属性：裸数组，或 results/meals/foods/data/items/answer/任意命名的数组字段
   let arr: any[] | null = null;
-  if (Array.isArray(raw)) arr = raw;
-  else if (Array.isArray(raw?.meals)) arr = raw.meals;
-  else if (Array.isArray(raw?.foods)) arr = raw.foods;
-  if (arr) {
-    arr.forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (raw && typeof raw === 'object') {
+    const candidates: any[][] = [];
+    if (Array.isArray(raw.results)) candidates.push(raw.results);
+    for (const k of Object.keys(raw)) {
+      const v = raw[k];
+      if (Array.isArray(v) && v.length && v.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+        candidates.push(v);
+      }
+    }
+    // 取「元素最像餐次、且元素数最多」的数组，避免误选到其它数组字段
+    let best = -1;
+    let bestLen = -1;
+    candidates.forEach((c) => {
+      const like = c.filter(hasMealShape).length;
+      if (like > best || (like === best && c.length > bestLen)) {
+        best = like;
+        bestLen = c.length;
+        arr = c;
+      }
+    });
+  }
+  if (arr && arr.length) {
+    // 2a 按 index 顺序对应
+    arr.forEach((part: any, idx: number) => {
+      const e = seqList[idx]?.[1];
+      if (e) setOne(e, part);
+    });
+    if (results.size) return results;
+    // 2b 长度对不上 → 按元素里的 meal/type 名称匹配（早/午/晚/加）
+    arr.forEach((part: any) => {
+      const name = String(part?.meal || part?.type || '');
+      const lm = name.includes('早') ? 'breakfast' : name.includes('午') ? 'lunch' : name.includes('晚') ? 'dinner' : name.includes('加') ? 'snack' : null;
+      if (!lm) return;
+      const e = chunk.find((x) => x.type === lm && !results.has(x.id));
+      if (e) setOne(e, part);
+    });
+    if (results.size) return results;
+    // 2c 仍没填完 → 退化为「把数组元素依次塞给还没填的餐」
+    let p = 0;
+    seqList.forEach(([, e]) => {
+      if (!results.has(e.id) && arr && arr[p]) {
+        setOne(e, arr[p]);
+        p += 1;
+      }
+    });
     return results;
   }
-  // 形态3（兜底）：编号对象 { "1":{...}, "2":{...} }
-  if (seqList.every(([i]) => raw && raw[String(i)])) {
-    seqList.forEach(([i, e]) => setOne(e, raw[String(i)]));
-    return results;
+
+  // 3) 编号对象 {"1":{...},"2":{...}}（兼容 0-based {"0":{...}}）
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && seqList.length) {
+    const use0 = seqList.every(([i]) => raw[String(i - 1)]);
+    if (seqList.every(([i]) => raw[String(i)]) || use0) {
+      seqList.forEach(([i, e]) => setOne(e, raw[String(use0 ? i - 1 : i)]));
+      if (results.size) return results;
+    }
   }
+
+  // 4) 语义餐次对象 {"早餐":{...},"午餐":{...}}
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const e of chunk) {
+      const obj = raw[MEAL_LABEL[e.type]] || raw[e.type];
+      if (obj && !results.has(e.id)) setOne(e, obj);
+    }
+    if (results.size) return results;
+  }
+
   return results;
 };
 
@@ -689,8 +756,8 @@ const requestMealBatch = async (
   const intro = multiDate
     ? `以下是 ${groups.size} 个不同日期、共 ${chunk.length} 餐（攒了几天一起补记），请按每餐所属日期分别独立估算：`
     : `这是 ${dateHeading(Array.from(groups.keys())[0])} 的 ${chunk.length} 餐，请分别估算每一餐的营养：`;
-  // 关键改动：不再要求「编号 key 对象」，而是「与各餐顺序一一对应的 JSON 数组」——模型最擅长、最稳。
-  const outro = `\n\n请返回一个 JSON 数组，数组每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…），不要额外输出任何文字。`;
+  // 关键改动：要求模型返回「顶层是对象的 JSON（含 results 数组）」——与 response_format: json_object 兼容，避免被 API 强制包一层导致解析失败。
+  const outro = `\n\n请返回一个 JSON 对象，结构为 {"results": [...]}，其中 results 数组的每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…）。不要额外输出任何文字，也不要返回裸数组。`;
   const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
   // 输出预算：按餐数动态给，避免多餐 JSON 被截断，又不超模型上限
@@ -713,7 +780,8 @@ const requestMealBatch = async (
         // 诊断日志：帮助定位为什么批量解析全空（token 已消耗但没拿到结果）
         console.error('[Nutrition] 批量解析全部为空。原始返回前 800 字符:', String(content).slice(0, 800));
         console.error('[Nutrition] 解析后的 raw:', JSON.stringify(raw)?.slice(0, 800));
-        throw new Error('模型返回里没有可解析的各餐营养结果');
+        // 把原始返回片段带进错误信息，首页弹窗会展示，用户也能到「AI 用量记录 → 调试·原始返回」看完整内容
+        throw new Error('模型返回里没有可解析的各餐营养结果。原始返回前 500 字：\n' + String(content).slice(0, 500));
       }
       return { results, status: 'ok' };
     } catch (e: any) {
@@ -777,13 +845,15 @@ const estimateCore = async (
   onEach?: (done: number, total: number) => void,
   ctx?: MealCtxInput,
   cfgOverride?: ModelConfig,
-): Promise<{ entries: MealEntry[]; success: number; total: number; failedMeals: MealEntry[] }> => {
+): Promise<{ entries: MealEntry[]; success: number; total: number; failedMeals: MealEntry[]; status: 'ok' | 'nokey' | 'error' | 'rate'; message?: string }> => {
   const cfg = cfgOverride || (await getActiveConfig(false));
   const valid = entries.filter((e) => e.content && e.content.trim());
   const total = valid.length;
-  if (total === 0) return { entries, success: 0, total: 0, failedMeals: [] };
+  let retStatus: 'ok' | 'nokey' | 'error' | 'rate' = 'ok';
+  let retMsg: string | undefined;
+  if (total === 0) return { entries, success: 0, total: 0, failedMeals: [], status: 'ok' };
   if (onEach) onEach(0, total);
-  if (!cfg) return { entries, success: 0, total, failedMeals: valid };
+  if (!cfg) return { entries, success: 0, total, failedMeals: valid, status: 'nokey', message: undefined };
 
   // ① 分流
   const results = new Map<string, MealNutrition>();
@@ -807,9 +877,13 @@ const estimateCore = async (
       const list0 = await getMeals();
       const next0 = list0.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
       await saveMeals(next0);
-      return { entries: next0, success: results.size, total, failedMeals: needAi };
+      return { entries: next0, success: results.size, total, failedMeals: needAi, status: 'nokey', message: undefined };
     }
     batch.results.forEach((v, k) => results.set(k, v));
+    if (batch.status !== 'ok') {
+      retStatus = batch.status;
+      retMsg = batch.message;
+    }
   }
 
   // ④ 合并保存（重新读一次，避免覆盖估算期间用户的新增/修改）
@@ -817,7 +891,7 @@ const estimateCore = async (
   const next = list.map((m) => (results.has(m.id) ? { ...m, nutrition: results.get(m.id) } : m));
   await saveMeals(next);
   const failedMeals = valid.filter((e) => !results.has(e.id));
-  return { entries: next, success: results.size, total, failedMeals };
+  return { entries: next, success: results.size, total, failedMeals, status: retStatus, message: retMsg };
 };
 
 // 估算某天全部餐（首页「AI 估算今日营养」按钮）。统一走 estimateCore。

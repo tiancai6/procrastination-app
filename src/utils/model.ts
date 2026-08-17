@@ -1,5 +1,5 @@
 import { getActiveConfig, ModelConfig, BRAND_PRESETS } from './modelConfig';
-import { recordAiUsage } from './usage';
+import { recordAiUsage, recordAiRaw } from './usage';
 import { showToast } from './toast';
 
 // ============ 统一模型调用（OpenAI 兼容格式）============
@@ -121,6 +121,7 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   const data = await res.json();
   const content: string | undefined = data?.choices?.[0]?.message?.content;
   reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
+  if (content) recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
   if (!content) throw new Error('模型返回为空');
   return content;
 };
@@ -212,6 +213,7 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   const data = await res.json();
   const content = extractResponsesText(data);
   reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
+  if (content) recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
   if (!content) throw new Error('模型返回为空');
   return content;
 };

@@ -166,15 +166,18 @@ const HomePage: React.FC = () => {
     const preferredId = await getPreferredMealModelId();
     const models = await getModelConfigs();
     const mealCfg = preferredId ? models.find((m) => m.id === preferredId) : undefined;
-    const { success, total, failedMeals } = await estimateDayMeals(todayMeals, undefined, ctx, mealCfg);
+    const { success, total, failedMeals, message } = await estimateDayMeals(todayMeals, undefined, ctx, mealCfg);
     setEstimating(false);
     await loadMeals();
     emitDataReset(); // 通知统计中心等已挂载页面立即刷新三餐数据
     if (failedMeals.length > 0) {
       const names = failedMeals.map((m) => MEAL_LABEL[m.type] || '一餐').join('、');
+      const tip = message
+        ? `\n\n技术信息（AI 实际返回片段）：\n${String(message).slice(0, 300)}\n\n可到「我的 → AI 用量记录 → 调试·原始返回」看完整内容。`
+        : '\n\n可再点一次「AI 估算今日营养」重试；若反复失败，请到「AI 用量记录 → 调试·原始返回」查看模型实际返回。';
       Alert.alert(
         `估算完成 ${success}/${total}`,
-        `有 ${failedMeals.length} 餐没估上（${names}）。常见原因：接口限流或网络被拦。可再点一次「AI 估算今日营养」重试。`,
+        `有 ${failedMeals.length} 餐没估上（${names}）。常见原因：接口限流、网络被拦、或返回格式无法解析。${tip}`,
       );
     } else if (total > 0) {
       Alert.alert('估算完成', `已为今天 ${success} 餐估算营养`);

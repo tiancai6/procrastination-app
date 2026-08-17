@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal } fr
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
-import { getAiUsageLog, clearAiUsageLog, exportAiUsage, AiUsageRecord } from '../utils/usage';
+import { getAiUsageLog, clearAiUsageLog, exportAiUsage, getAiRawLog, clearAiRawLog, exportAiRaw, AiUsageRecord, AiRawRecord } from '../utils/usage';
 
 const BRAND_COLORS: Record<string, string> = {
   glm: '#4F46E5',
@@ -42,8 +42,13 @@ interface Agg {
 
 const AiUsagePage: React.FC<Props> = ({ visible, onClose }) => {
   const [list, setList] = useState<AiUsageRecord[]>([]);
+  const [rawList, setRawList] = useState<AiRawRecord[]>([]);
+  const [showRaw, setShowRaw] = useState(false);
 
-  const load = async () => setList(await getAiUsageLog());
+  const load = async () => {
+    setList(await getAiUsageLog());
+    setRawList(await getAiRawLog());
+  };
   useEffect(() => {
     if (visible) load();
   }, [visible]);
@@ -85,6 +90,21 @@ const AiUsagePage: React.FC<Props> = ({ visible, onClose }) => {
       if (!fileName) {
         Alert.alert('没有数据', '当前还没有任何 AI 调用记录，无法导出');
       }
+    } catch (e: any) {
+      Alert.alert('导出失败', e?.message ? String(e.message) : '未知错误');
+    }
+  };
+
+  const handleClearRaw = () => {
+    Alert.alert('清除原始返回', '确定要清空「AI 原始返回」调试记录吗？（不影响用量统计与其他数据）', [
+      { text: '取消', style: 'cancel' },
+      { text: '清空', style: 'destructive', onPress: async () => { await clearAiRawLog(); await load(); } },
+    ]);
+  };
+  const handleExportRaw = async () => {
+    try {
+      const fileName = await exportAiRaw();
+      if (!fileName) Alert.alert('没有数据', '当前还没有任何 AI 原始返回记录');
     } catch (e: any) {
       Alert.alert('导出失败', e?.message ? String(e.message) : '未知错误');
     }
@@ -188,6 +208,41 @@ const AiUsagePage: React.FC<Props> = ({ visible, onClose }) => {
                 ))}
               </View>
 
+              {/* 调试 · AI 原始返回 */}
+              <TouchableOpacity style={styles.rawHead} onPress={() => setShowRaw((v) => !v)} activeOpacity={0.7}>
+                <Text style={styles.sectionTitle}>调试 · AI 原始返回（最近 {rawList.length} 条）</Text>
+                <Ionicons name={showRaw ? 'chevron-up-outline' : 'chevron-down-outline'} size={18} color={COLORS.textLight} />
+              </TouchableOpacity>
+              {showRaw && (
+                <View style={styles.rawCard}>
+                  {rawList.length === 0 && (
+                    <Text style={styles.emptySub}>还没有记录。每次调用 AI（三餐估算 / 对话等）后这里会保存模型原始返回，用于排查「有返回却解析失败」。</Text>
+                  )}
+                  {rawList.slice().reverse().map((r, i) => (
+                    <View key={`${r.ts}-${i}`} style={styles.rawRow}>
+                      <View style={styles.rawMeta}>
+                        <Text style={styles.recFeature}>{r.feature}</Text>
+                        <Text style={styles.recModel}>{r.modelId}</Text>
+                        <Text style={styles.recTime}>{fmtTime(r.ts)}</Text>
+                      </View>
+                      <Text style={styles.rawText} selectable>{r.text}</Text>
+                    </View>
+                  ))}
+                  {rawList.length > 0 && (
+                    <View style={styles.rawBtns}>
+                      <TouchableOpacity style={styles.rawBtn} onPress={handleExportRaw}>
+                        <Ionicons name="download-outline" size={14} color={COLORS.primary} />
+                        <Text style={styles.rawBtnText}>导出原始返回</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.rawBtn} onPress={handleClearRaw}>
+                        <Ionicons name="trash-outline" size={14} color={COLORS.danger} />
+                        <Text style={[styles.rawBtnText, { color: COLORS.danger }]}>清空</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              )}
+
               <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
                 <Ionicons name="trash-outline" size={16} color={COLORS.danger} />
                 <Text style={styles.clearBtnText}>清空用量记录</Text>
@@ -252,6 +307,14 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#FECACA',
   },
   clearBtnText: { fontSize: 14, color: COLORS.danger, fontWeight: '600' },
+  rawHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, marginBottom: 10 },
+  rawCard: { backgroundColor: COLORS.card, borderRadius: 14, padding: 14, marginBottom: 18, borderWidth: 1, borderColor: COLORS.border },
+  rawRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  rawMeta: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  rawText: { fontSize: 11, color: COLORS.textLight, fontFamily: 'Courier New', lineHeight: 16 },
+  rawBtns: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16, marginTop: 10 },
+  rawBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  rawBtnText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
 });
 
 export default AiUsagePage;
