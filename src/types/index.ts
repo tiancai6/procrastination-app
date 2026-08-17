@@ -219,6 +219,11 @@ export interface KnownFood {
   baseGrams?: number;
   // 用户习惯输入单位每份对应的克数（如 inputUnit「一份(20g)」→20）。用于「N份」换算。
   inputUnitGrams?: number;
+  // —— 关联食物后由用户手动填写的实际份量（新机制，替代「从文本猜分量」）——
+  // unit: 用户选的填写单位；grams: 按 baseGrams 换算后的「本餐实际吃掉的克数」（计算的唯一依据）。
+  unit?: 'g' | 'serving'; // 'g'=按克填；'serving'=按份/碗填
+  servingCount?: number;  // unit==='serving' 时填的份数（如 0.5 碗）
+  grams?: number;         // 解析后的实际克数 = unit==='g' ? 输入值 : servingCount × (inputUnitGrams||baseGrams)
 }
 
 export type MealAdequacy = '不足' | '适量' | '过量';

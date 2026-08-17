@@ -61,13 +61,14 @@ const parseActualGrams = (content: string, core: string, baseGrams?: number, inp
   return null;
 };
 
-// 把一条已知食物的营养按用户实际吃的份量缩放（找不到实际份量则按一份，不变）
-const scaleKnown = (k: KnownFood, content: string): KnownFood => {
-  const core = foodNameCore(k.name);
-  const actual = parseActualGrams(content, core, k.baseGrams, k.inputUnitGrams);
-  let ratio = 1;
-  if (actual != null && k.baseGrams && k.baseGrams > 0) ratio = actual / k.baseGrams;
-  else if (actual != null && k.inputUnitGrams && k.inputUnitGrams > 0) ratio = actual / k.inputUnitGrams;
+// 把一条已知食物的营养按用户实际吃的份量缩放。
+// 份量来自 KnownFood.grams（用户在 UI 手动填的「实际克数」；由「克」或「份×单位克数」换算得到）。
+// 没填 grams 时按基准一份算（ratio=1），兼容旧数据（旧 knownFoods 无 grams 字段）。
+// 这是已知食物营养的「唯一可靠来源」——不再依赖从餐文本里猜分量（原来极易估错）。
+const scaleKnown = (k: KnownFood): KnownFood => {
+  const base = k.baseGrams && k.baseGrams > 0 ? k.baseGrams : 100;
+  const grams = k.grams && k.grams > 0 ? k.grams : base;
+  const ratio = grams / base;
   if (ratio === 1) return k;
   const r1 = (v: number) => Math.round(v * ratio * 10) / 10;
   return {
@@ -79,6 +80,17 @@ const scaleKnown = (k: KnownFood, content: string): KnownFood => {
     fiber: r1(k.fiber),
     water: k.water != null ? Math.round(k.water * ratio) : undefined,
   };
+};
+
+// 从餐文本里剔除「已关联食物库」的名字，看还剩没有需要 AI 估算的自由文本食物。
+// 返回去掉已知食物名、并滤掉标点/数字/单位后的残余文字；为空 → 这餐全是已知食物，可跳过 AI。
+const stripKnownText = (content: string, known: KnownFood[] | null): string => {
+  let s = content || '';
+  for (const k of known || []) {
+    const core = foodNameCore(k.name);
+    if (core) s = s.split(core).join(' ');
+  }
+  return s.replace(/[（()）\d.gG千卡kcal碗份根片个块只杯mlML，,、。.\s]/g, '').trim();
 };
 
 // 当日身体/运动上下文，注入到营养估算 prompt，让 AI 按真实消耗判断热量，而不是死板的 2000kcal。
@@ -398,6 +410,7 @@ const normalizeNutrition = (raw: any): MealNutrition => {
 const applyKnownFoods = (n: MealNutrition, known: KnownFood[] | null | undefined): void => {
   if (!known || known.length === 0) return;
   for (const k of known) {
+    const sk = scaleKnown(k); // 先按用户实际份量缩放，得到已知食物的准确值
     // 用核心词精确匹配（而非名字互相包含），避免「牛奶燕麦粥」被误当成「牛奶」覆盖成整份值
     const kc = foodNameCore(k.name);
     let it = n.items.find((i) => foodNameCore(i.name) === kc);
@@ -405,11 +418,11 @@ const applyKnownFoods = (n: MealNutrition, known: KnownFood[] | null | undefined
       it = { name: k.name, protein: 0, calories: 0, fat: 0, carbs: 0, fiber: 0 };
       n.items.push(it);
     }
-    it.protein = k.protein;
-    it.calories = k.calories;
-    it.fat = k.fat;
-    it.carbs = k.carbs;
-    it.fiber = k.fiber;
+    it.protein = sk.protein;
+    it.calories = sk.calories;
+    it.fat = sk.fat;
+    it.carbs = sk.carbs;
+    it.fiber = sk.fiber;
   }
   n.protein = n.items.reduce((s, i) => s + (i.protein || 0), 0);
   n.calories = n.items.reduce((s, i) => s + (i.calories || 0), 0);
@@ -434,7 +447,18 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   // 已知营养（来自食物库）：先按用户实际吃的份量缩放，再作为 ground truth 注入 prompt，
   // 保证「半碗米饭」也按半碗的热量算，而不是整份。
   const rawKnown = entry.knownFoods && entry.knownFoods.length ? entry.knownFoods : null;
-  const known = rawKnown ? rawKnown.map((k) => scaleKnown(k, entry.content)) : null;
+  const known = rawKnown ? rawKnown.map((k) => scaleKnown(k)) : null;
+
+  // 全关联且分量已填 → 本地直接算，完全不发 AI 请求（0 token，最准）
+  if (known && stripKnownText(entry.content, rawKnown).length === 0) {
+    const items = known.map((k) => ({ name: k.name, protein: k.protein, calories: k.calories, fat: k.fat, carbs: k.carbs, fiber: k.fiber }));
+    return {
+      result: normalizeNutrition({ items, adequacy: '适量', comment: '已按食物库精确值计算（未调用 AI）' }),
+      status: 'ok',
+      searched: false,
+      needSearch: false,
+    };
+  }
 
   // 是否需要联网搜索：仅当这顿里含有「食物库没有覆盖的食物」才联网。
   // 纯已知食物（文字去掉已知食物名后已无实质内容）→ 不联网；纯未知 / 混合 → 联网。
@@ -574,7 +598,7 @@ const normalizeCtxInput = (
 const BATCH_MEALS = 10;
 
 const knownScaledFor = (e: MealEntry) =>
-  e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k, e.content)) : null;
+  e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k)) : null;
 
 // 从模型批量返回里稳健抽取每餐营养。
 // ⚠️ 根因：模型常不按 prompt 返回 { "1":{...},"2":{...} }，而返回 数组 / 语义 key（早餐/晚餐/加餐）/ 外层套 meals 数组 / 单餐裸对象。

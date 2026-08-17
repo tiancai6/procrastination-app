@@ -107,6 +107,10 @@ const deriveKnownFoods = (text: string, lib: FoodItem[]): KnownFood[] => {
         water: f.water,
         baseGrams: f.baseGrams,
         inputUnitGrams: f.inputUnit ? parseBaseGrams(f.inputUnit) : undefined,
+        // 默认按「1 份」关联，用户可改成「克」并填实际份量；grams 由份×单位克数换算
+        unit: 'serving',
+        servingCount: 1,
+        grams: (f.inputUnit ? parseBaseGrams(f.inputUnit) : f.baseGrams) || 100,
       });
     }
   }
@@ -253,6 +257,51 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setFoodLib(await getFoodLibrary());
     Alert.alert('已存入食物库', saved > 0 ? `已保存 ${saved} 样新食物，下次记录可直接从食物库选择` : '这些食物都已在食物库里了，无需重复保存');
   };
+
+  // 关联食物库的「份量」编辑器：克 / 份 切换 + 数字输入，实时换算 grams（营养计算的唯一依据）
+  const patchKnown = (t: MealType, idx: number, patch: Partial<KnownFood>) =>
+    setKnownFoods((s) => {
+      const arr = [...(s[t] || [])];
+      arr[idx] = { ...arr[idx], ...patch };
+      return { ...s, [t]: arr };
+    });
+  const patchSnackKnown = (sIdx: number, kIdx: number, patch: Partial<KnownFood>) =>
+    setSnackList((s) => s.map((x, i) => i === sIdx ? { ...x, knownFoods: (x.knownFoods || []).map((k, j) => (j === kIdx ? { ...k, ...patch } : k)) } : x));
+  const renderKnown = (arr: KnownFood[], onPatch: (idx: number, patch: Partial<KnownFood>) => void) => (
+    <View style={styles.linkedBox}>
+      <View style={styles.linkedHead}>
+        <Ionicons name="library-outline" size={13} color="#8B5CF6" />
+        <Text style={styles.linkedText}>已关联食物库（请填实际分量）：</Text>
+      </View>
+      {arr.map((k, ki) => {
+        const unit = k.inputUnitGrams && k.inputUnitGrams > 0 ? k.inputUnitGrams : (k.baseGrams || 100);
+        return (
+          <View key={ki} style={styles.knownRow}>
+            <Text style={styles.knownName} numberOfLines={1}>{k.name}</Text>
+            <View style={styles.knownUnitBox}>
+              <TouchableOpacity style={[styles.unitBtn, k.unit === 'g' && styles.unitBtnActive]} onPress={() => onPatch(ki, { unit: 'g' })}>
+                <Text style={[styles.unitBtnText, k.unit === 'g' && styles.unitBtnTextActive]}>克</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.unitBtn, k.unit !== 'g' && styles.unitBtnActive]} onPress={() => onPatch(ki, { unit: 'serving' })}>
+                <Text style={[styles.unitBtnText, k.unit !== 'g' && styles.unitBtnTextActive]}>份</Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.knownInput}
+              keyboardType="decimal-pad"
+              value={k.unit === 'g' ? String(k.grams && k.grams > 0 ? k.grams : '') : String(k.servingCount != null ? k.servingCount : '')}
+              onChangeText={(v) => {
+                const num = parseFloat(v) || 0;
+                if (k.unit === 'g') onPatch(ki, { grams: num });
+                else onPatch(ki, { servingCount: num, grams: num * unit });
+              }}
+            />
+            <Text style={styles.knownUnitLabel}>{k.unit === 'g' ? 'g' : `≈${Math.round(k.grams || unit)}g`}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
 
   const doSave = async () => {
     await upsertMeal('breakfast', dateStr, contents.breakfast, undefined, knownFoods.breakfast);
@@ -433,12 +482,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
           multiline
           maxLength={200}
         />
-        {knownFoods[f.key].length > 0 && (
-          <View style={styles.linkedBox}>
-            <Ionicons name="library-outline" size={13} color="#8B5CF6" />
-            <Text style={styles.linkedText}>已关联食物库：{knownFoods[f.key].map((k) => k.name).join('、')}</Text>
-          </View>
-        )}
+        {knownFoods[f.key].length > 0 && renderKnown(knownFoods[f.key], (idx, p) => patchKnown(f.key, idx, p))}
         {entry?.nutrition && (
           <>
             <TouchableOpacity style={styles.mealResultMini} onPress={() => toggleExpand(entry.id)} activeOpacity={0.7}>
@@ -568,12 +612,7 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
                         <TouchableOpacity style={styles.snackRemove} onPress={() => removeSnack(idx)}>
                           <Ionicons name="trash-outline" size={15} color={COLORS.textLight} />
                         </TouchableOpacity>
-                        {s.knownFoods && s.knownFoods.length > 0 && (
-                          <View style={[styles.linkedBox, { width: '100%' }]}>
-                            <Ionicons name="library-outline" size={13} color="#8B5CF6" />
-                            <Text style={styles.linkedText}>已关联食物库：{s.knownFoods.map((k) => k.name).join('、')}</Text>
-                          </View>
-                        )}
+                        {s.knownFoods && s.knownFoods.length > 0 && renderKnown(s.knownFoods, (kIdx, p) => patchSnackKnown(idx, kIdx, p))}
                         {entry?.nutrition && (
                           <View style={styles.snackResultWrap}>
                             <TouchableOpacity
@@ -958,11 +997,23 @@ const styles = StyleSheet.create({
     borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',
   },
   linkedBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10,
-    backgroundColor: '#F5F0FF', borderWidth: 0.5, borderColor: '#DDD0FB', alignSelf: 'flex-start',
+    marginTop: 6, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10,
+    backgroundColor: '#F5F0FF', borderWidth: 0.5, borderColor: '#DDD0FB', alignSelf: 'flex-start', width: '100%',
   },
+  linkedHead: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 6 },
   linkedText: { fontSize: 11.5, color: '#8B5CF6', fontWeight: '600', flexShrink: 1 },
+  knownRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  knownName: { flex: 1, fontSize: 12, color: COLORS.text, fontWeight: '600' },
+  knownUnitBox: { flexDirection: 'row', backgroundColor: '#EDE6FB', borderRadius: 8, overflow: 'hidden' },
+  unitBtn: { paddingHorizontal: 9, paddingVertical: 4, fontSize: 12 },
+  unitBtnActive: { backgroundColor: '#8B5CF6' },
+  unitBtnText: { fontSize: 12, color: '#8B5CF6', fontWeight: '600' },
+  unitBtnTextActive: { color: '#fff' },
+  knownInput: {
+    width: 56, height: 30, borderWidth: 0.5, borderColor: '#DDD0FB', borderRadius: 8,
+    backgroundColor: '#fff', paddingHorizontal: 8, fontSize: 13, color: COLORS.text, textAlign: 'center',
+  },
+  knownUnitLabel: { fontSize: 11, color: COLORS.textLight, minWidth: 36 },
   snackFoodBtn: {
     width: 34, height: 34, borderRadius: 10, backgroundColor: '#F5F0FF',
     borderWidth: 0.5, borderColor: '#DDD0FB', alignItems: 'center', justifyContent: 'center',
