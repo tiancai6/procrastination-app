@@ -576,6 +576,63 @@ const BATCH_MEALS = 10;
 const knownScaledFor = (e: MealEntry) =>
   e.knownFoods && e.knownFoods.length ? e.knownFoods.map((k) => scaleKnown(k, e.content)) : null;
 
+// 从模型批量返回里稳健抽取每餐营养。
+// ⚠️ 根因：模型常不按 prompt 返回 { "1":{...},"2":{...} }，而返回 数组 / 语义 key（早餐/晚餐/加餐）/ 外层套 meals 数组 / 单餐裸对象。
+// 旧代码只认 raw["1"] → 全部取不到 → 0/N。这里按多策略兜底抽取，保证「发 1 次请求」尽量拿到结果。
+const extractBatchMeals = (
+  raw: any,
+  chunk: MealEntry[],
+  idxToEntry: Map<number, MealEntry>,
+): Map<string, MealNutrition> => {
+  const results = new Map<string, MealNutrition>();
+  const pickOne = (obj: any): MealNutrition | null => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const n = normalizeNutrition(obj);
+    const empty = (!n.items || n.items.length === 0) && n.calories === 0 && n.protein === 0 && n.carbs === 0 && n.fat === 0 && n.fiber === 0;
+    return empty ? null : n;
+  };
+  const seqList = Array.from(idxToEntry.entries()).sort((a, b) => a[0] - b[0]);
+  const setOne = (e: MealEntry, obj: any) => {
+    const n = pickOne(obj);
+    if (!n) return;
+    applyKnownFoods(n, e.knownFoods);
+    results.set(e.id, n);
+  };
+
+  // 策略1：编号对象 { "1":{...}, "2":{...} }
+  if (seqList.every(([i]) => raw && raw[String(i)])) {
+    seqList.forEach(([i, e]) => setOne(e, raw[String(i)]));
+    return results;
+  }
+  // 策略2：数组 [ {...}, {...}, {...} ]
+  if (Array.isArray(raw)) {
+    raw.forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
+    return results;
+  }
+  // 策略3：外层包了 meals/foods/items/list/results/data 数组
+  const arrKey = ['meals', 'foods', 'items', 'list', 'results', 'data'].find((k) => Array.isArray(raw?.[k]));
+  if (arrKey) {
+    (raw[arrKey] as any[]).forEach((part: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, part); });
+    return results;
+  }
+  // 策略4：语义 key（早餐/午餐/晚餐/加餐…）按 MEAL_LABEL 匹配
+  const labelMap = new Map<string, MealEntry>();
+  seqList.forEach(([, e]) => { const lab = (MEAL_LABEL[e.type] || '').replace(/\s/g, ''); if (lab) labelMap.set(lab, e); });
+  if (labelMap.size > 0) {
+    Object.keys(raw || {}).forEach((k) => {
+      const e = labelMap.get(k.replace(/\s/g, ''));
+      if (e) setOne(e, raw[k]);
+    });
+    if (results.size > 0) return results;
+  }
+  // 策略5：裸对象即单餐
+  if (chunk.length === 1) { setOne(chunk[0], raw); return results; }
+  // 策略6：任意「看起来像餐」的值，按出现顺序映射
+  const vals = Object.values(raw || {}).filter((v) => pickOne(v));
+  vals.forEach((v: any, idx: number) => { const e = seqList[idx]?.[1]; if (e) setOne(e, v); });
+  return results;
+};
+
 // 一批餐 → 一个请求
 const requestMealBatch = async (
   cfg: ModelConfig,
@@ -658,33 +715,11 @@ const requestMealBatch = async (
         ? await postChatResponses(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: true, feature: '三餐估算(批量)' })
         : await postChat(cfg, messages, { temperature: 0.5, maxTokens, forceSearch: needSearch, feature: '三餐估算(批量)' });
       const raw = parseJsonContent(content);
-      const results = new Map<string, MealNutrition>();
-      // 兼容模型返回的几种结构（设计上只要「一次请求、每餐单独判断」）：
-      // ① 编号对象 { "1": {...}, "2": {...} } —— 预期格式
-      // ② 数组 [ {...}, {...} ] —— 多餐时模型偶尔直接返回数组
-      // ③ 单餐直接返回 { meal, items, ... }（不带编号 key，1 餐最容易出现）→ 当作第 1 餐
-      const pickOne = (obj: any): MealNutrition | null => {
-        if (!obj || typeof obj !== 'object') return null;
-        const n = normalizeNutrition(obj);
-        const isEmpty =
-          (!n.items || n.items.length === 0) &&
-          n.calories === 0 && n.protein === 0 && n.carbs === 0 && n.fat === 0 && n.fiber === 0;
-        return isEmpty ? null : n;
-      };
-      const useArray = Array.isArray(raw);
-      const singleObj = !useArray && !raw?.[String(1)] && chunk.length === 1 ? raw : null;
-      idxToEntry.forEach((e, i) => {
-        let part: any = useArray ? raw[i - 1] : raw?.[String(i)];
-        if (chunk.length === 1 && !part && singleObj) part = singleObj; // 单餐兼容
-        if (!part) return; // 模型确实漏算这餐
-        const n = pickOne(part);
-        if (!n) return;
-        applyKnownFoods(n, e.knownFoods); // 用食物库准确值覆盖已知食物
-        results.set(e.id, n);
-      });
+      const results = extractBatchMeals(raw, chunk, idxToEntry);
       if (results.size === 0) {
         // 诊断日志：帮助定位为什么批量解析全空（token 已消耗但没拿到结果）
-        console.error('[Nutrition] 批量解析全部为空，原始返回:', String(content).slice(0, 800));
+        console.error('[Nutrition] 批量解析全部为空。原始返回前 800 字符:', String(content).slice(0, 800));
+        console.error('[Nutrition] 解析后的 raw:', JSON.stringify(raw)?.slice(0, 800));
         throw new Error('模型返回里没有可解析的各餐营养结果');
       }
       return { results, status: 'ok' };
