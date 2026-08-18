@@ -417,6 +417,7 @@ const ChatPage: React.FC = () => {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           extraData={selectedIds}
+          style={{ flex: 1 }}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={scrollToEnd}
           ListFooterComponent={
@@ -433,7 +434,7 @@ const ChatPage: React.FC = () => {
           initialNumToRender={12}
           maxToRenderPerBatch={8}
           windowSize={6}
-          removeClippedSubviews={true}
+          removeClippedSubviews={false}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="chatbubbles-outline" size={42} color={COLORS.textLighter} />
@@ -843,7 +844,7 @@ const styles = StyleSheet.create({
   },
   hintBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '600' },
   listContent: { padding: 14, paddingBottom: 20, flexGrow: 1 },
-  row: { flexDirection: 'row', marginBottom: 10, alignItems: 'center' },
+  row: { flexDirection: 'row', marginBottom: 10, alignItems: 'flex-start' },
   rowUser: { justifyContent: 'flex-end' },
   rowBot: { justifyContent: 'flex-start' },
   bubble: { maxWidth: '78%', padding: 11, paddingBottom: 6, borderRadius: 14 },

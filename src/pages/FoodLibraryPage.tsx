@@ -135,11 +135,12 @@ const FoodLibraryPage: React.FC = () => {
         Alert.alert('未配置视觉模型', '请先到「我的 → 管理 AI 模型」添加一个支持图片的模型（勾选「支持图片」），才能识别配料表');
         return;
       }
-      // 只有 GLM（glm-4v-*）/ Gemini 真正支持图片识别；豆包/DeepSeek 不支持，提前拦截避免白跑
-      if (visCfg.brand !== 'glm' && visCfg.brand !== 'gemini') {
+      // 视觉模型品牌白名单：GLM(glm-4v-*)、Gemini、豆包(Evolving 等多模态模型) 支持读图；
+      // DeepSeek 等为纯文本，提前拦截避免白跑。注意 Evolving 是多模态、能看图，故豆包也放行。
+      if (visCfg.brand !== 'glm' && visCfg.brand !== 'gemini' && visCfg.brand !== 'doubao') {
         Alert.alert(
           '当前视觉模型可能不支持看图',
-          `识别配料表需要支持图片的模型（GLM 的 glm-4v-* 或 Gemini）。当前模型品牌「${BRAND_PRESETS[visCfg.brand].label}」可能不支持图片识别，请到「管理 AI 模型」改用 GLM/Gemini 的视觉模型。`,
+          `识别配料表需要支持图片的模型（GLM 的 glm-4v-*、Gemini，或豆包的 Evolving 等多模态模型）。当前模型品牌「${BRAND_PRESETS[visCfg.brand].label}」可能不支持图片识别，请到「管理 AI 模型」改用支持图片的模型。`,
         );
         return;
       }
@@ -162,7 +163,7 @@ const FoodLibraryPage: React.FC = () => {
               ],
             },
           ],
-          { temperature: 0.3, maxTokens: 800, feature: '食物分析' },
+          { temperature: 0.3, maxTokens: 2000, feature: '食物分析' },
         );
         const p: any = parseJsonContent(content);
         setForm((f) => ({
@@ -207,7 +208,7 @@ const FoodLibraryPage: React.FC = () => {
           { role: 'system', content: TEXT_RECOGNITION_PROMPT },
           { role: 'user', content: raw },
         ],
-        { temperature: 0.2, maxTokens: 800, feature: '食物分析' },
+        { temperature: 0.2, maxTokens: 2000, feature: '食物分析' },
       );
       const p: any = parseJsonContent(content);
       const per100 = p?.per100 || {};
