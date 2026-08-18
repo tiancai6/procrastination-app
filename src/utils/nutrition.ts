@@ -760,9 +760,9 @@ const requestMealBatch = async (
   const outro = `\n\n请返回一个 JSON 对象，结构为 {"results": [...]}，其中 results 数组的每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…）。不要额外输出任何文字，也不要返回裸数组。`;
   const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
-  // 输出预算：推理模型（如 doubao-seed-2-0-mini）会先把大量 token 花在"思考"上，预算必须够大，
-  // 否则被截断（status=incomplete/length）导致正文为空。每餐 1500 + 基础 800，下限 4000，上限 8000。
-  const maxTokens = Math.min(8000, Math.max(4000, chunk.length * 1500 + 800));
+  // 输出预算：推理模型（如 doubao-seed-evolving / 2-0-mini）会先把大量 token 花在"思考"上，预算必须够大，
+  // 否则被截断（status=incomplete/length）导致正文为空。每餐 1500 + 基础 800，下限 8000（日常三餐一次成功不重试），上限 20000。
+  const maxTokens = Math.min(20000, Math.max(8000, chunk.length * 1500 + 800));
   const useResponses = cfg.brand === 'doubao' && needSearch;
   const messages = [
     { role: 'system' as const, content: NUTRITION_BATCH_SYSTEM_PROMPT },

@@ -29,7 +29,7 @@ const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined 
   return tool === 'google_search' ? [{ google_search: {} }] : [{ type: 'web_search' }];
 };
 
-const defaultMaxTokens = (cfg: ModelConfig): number => (cfg.brand === 'glm' ? 1024 : 2048);
+const defaultMaxTokens = (cfg: ModelConfig): number => (cfg.brand === 'glm' ? 2048 : 4096);
 
 // 解析各品牌返回的 usage（Chat Completions 用 prompt_tokens/completion_tokens；Responses API 用 input_tokens/output_tokens），
 // 写入用量记录并弹 Toast 提示「模型 + token 用量」。
@@ -89,10 +89,11 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   if (cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-')) {
     console.warn(`[model] ⚠️ 豆包模型标识 "${cfg.modelId}" 不是 ep- 开头的接入点 ID！火山方舟可能无法正确路由此请求。请到「管理 AI 模型」修正该模型的标识为 ep-xxxx 格式。`);
   }
-  // 🔧 推理模型（如 doubao-seed-2-0-mini）会先把大量输出 token 花在"思考"上，
+  // 🔧 推理模型（如 doubao-seed-evolving / 2-0-mini）会先把大量输出 token 花在"思考"上，
   // 若 max_tokens 太小会被截断（finish_reason=length）导致 content 为空。这里检测到截断就自动翻倍额度重试。
+  // Evolving 官方最大回答 256K，这里把重试上限放到 20000 留足安全余量（日常三餐根本用不到这么多）。
   let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
-  const MAX_OUTPUT_CAP = 8000;
+  const MAX_OUTPUT_CAP = 20000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
     const res = await fetch(cfg.baseUrl, {
@@ -196,9 +197,9 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   const url = toResponsesUrl(cfg.baseUrl);
   const { instructions, input } = toResponsesBody(payload);
   // 🔧 推理模型会先把输出额度花在"思考"上，阈值太小会被截断（status=incomplete/reason=length）→ content 为空。
-  // 检测到截断就自动翻倍 max_output_tokens 重试，直至上限。
+  // 检测到截断就自动翻倍 max_output_tokens 重试，直至上限。Evolving 官方最大回答 256K，这里上限放到 20000。
   let maxOutput = opts.maxTokens ?? 1000;
-  const MAX_OUTPUT_CAP = 8000;
+  const MAX_OUTPUT_CAP = 20000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
     const body: any = {
