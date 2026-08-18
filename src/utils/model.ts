@@ -551,13 +551,23 @@ export const postChatStream = (
   });
 
 // 便捷封装：自动解析「发图片用视觉模型 / 纯文本用默认模型」
+// 🔧 视觉识别只认 isVision 开关，不写死品牌：只要用户在「管理 AI 模型」勾选了「设为视觉模型」即可用于识图。
+//   - 豆包（火山）多模态视觉只在 Responses API（/responses）受支持，故豆包视觉请求走 postChatResponses；
+//   - GLM / Gemini / DeepSeek 等在 Chat Completions（postChat）即可传图。
+//   各品牌 max_tokens 上限不同（GLM 免费档仅 1024，写死 2000/4096 会被 API 直接拒 400），这里按品牌 clamp。
 export const callModel = async (payload: ChatPayload, useVision: boolean, opts: CallOpts = {}): Promise<string> => {
   const cfg = await getActiveConfig(useVision);
   if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
   if (useVision && !cfg.isVision) {
-    throw new Error('当前默认模型不支持图片，请在模型配置里把某个模型设为「视觉模型」（如 glm-4v-flash）');
+    throw new Error('当前用于图片识别的模型没有勾选「支持图片」。请到「管理 AI 模型」把某个支持图片的模型（如 GLM 的 glm-4v-flash、豆包 Evolving）勾选「设为视觉模型」后再试。');
   }
-  return postChat(cfg, payload, opts);
+  // 按品牌 clamp 视觉请求的 max_tokens 上限（GLM 免费档 ≤1024，写死 2000 会被 API 拒）
+  const visionCap = cfg.brand === 'glm' ? 1024 : cfg.brand === 'doubao' ? 8000 : 4096;
+  const realOpts: CallOpts = useVision
+    ? { ...opts, maxTokens: Math.min(opts.maxTokens ?? visionCap, visionCap) }
+    : opts;
+  if (useVision && cfg.brand === 'doubao') return postChatResponses(cfg, payload, realOpts);
+  return postChat(cfg, payload, realOpts);
 };
 
 export const callModelStream = (

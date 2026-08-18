@@ -20,8 +20,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import { getFoodLibrary, addFoodItem, deleteFoodItem, updateFoodItem, FoodItem, parseBaseGrams } from '../utils/nutrition';
-import { getActiveConfig, BRAND_PRESETS } from '../utils/modelConfig';
-import { postChat, parseJsonContent } from '../utils/model';
+import { getActiveConfig } from '../utils/modelConfig';
+import { postChat, callModel, parseJsonContent } from '../utils/model';
 
 interface FormState {
   name: string;
@@ -135,20 +135,18 @@ const FoodLibraryPage: React.FC = () => {
         Alert.alert('未配置视觉模型', '请先到「我的 → 管理 AI 模型」添加一个支持图片的模型（勾选「支持图片」），才能识别配料表');
         return;
       }
-      // 视觉模型品牌白名单：GLM(glm-4v-*)、Gemini、豆包(Evolving 等多模态模型) 支持读图；
-      // DeepSeek 等为纯文本，提前拦截避免白跑。注意 Evolving 是多模态、能看图，故豆包也放行。
-      if (visCfg.brand !== 'glm' && visCfg.brand !== 'gemini' && visCfg.brand !== 'doubao') {
+      // 🔧 不再写死品牌白名单——只要模型勾选了 isVision（设为视觉模型）即可用于识图，换模型无需改代码。
+      if (!visCfg.isVision) {
         Alert.alert(
-          '当前视觉模型可能不支持看图',
-          `识别配料表需要支持图片的模型（GLM 的 glm-4v-*、Gemini，或豆包的 Evolving 等多模态模型）。当前模型品牌「${BRAND_PRESETS[visCfg.brand].label}」可能不支持图片识别，请到「管理 AI 模型」改用支持图片的模型。`,
+          '该模型未开启图片识别',
+          `当前用于图片识别的模型「${visCfg.name}」没有勾选「支持图片」。请到「管理 AI 模型」把某个支持图片的模型（如 GLM 的 glm-4v-flash、豆包 Evolving）勾选「设为视觉模型」，再回来重试。`,
         );
         return;
       }
       setRecognizing(true);
       const dataUri = `data:${asset.type || 'image/jpeg'};base64,${asset.base64}`;
       try {
-        const content = await postChat(
-          visCfg,
+        const content = await callModel(
           [
             {
               role: 'user',
@@ -163,6 +161,7 @@ const FoodLibraryPage: React.FC = () => {
               ],
             },
           ],
+          true,
           { temperature: 0.3, maxTokens: 2000, feature: '食物分析' },
         );
         const p: any = parseJsonContent(content);
@@ -181,7 +180,8 @@ const FoodLibraryPage: React.FC = () => {
         Alert.alert('识别完成', '已自动填入营养数据，请核对修改后再保存');
       } catch (e: any) {
         console.error('[FoodLibrary] recognize failed', e);
-        Alert.alert('识别失败', e?.message ? String(e.message).slice(0, 200) : '请检查网络或视觉模型后重试，也可手动填写');
+        const modelInfo = visCfg ? `（使用模型：${visCfg.brand} / ${visCfg.modelId}）` : '';
+        Alert.alert('识别失败', (e?.message ? String(e.message).slice(0, 200) : '请检查网络或视觉模型后重试，也可手动填写') + modelInfo);
       } finally {
         setRecognizing(false);
       }
