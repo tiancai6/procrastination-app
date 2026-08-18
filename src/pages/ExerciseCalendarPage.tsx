@@ -1019,7 +1019,7 @@ const styles = StyleSheet.create({
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 11.5, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 6 },
   cell: {
-    width: '14.28%', aspectRatio: 0.78, alignItems: 'center', justifyContent: 'flex-start',
+    width: '14.28%', aspectRatio: 1.1, minHeight: 58, alignItems: 'center', justifyContent: 'flex-start',
     borderRadius: 7, paddingTop: 4, paddingHorizontal: 2, marginBottom: 2,
     borderWidth: 1, borderColor: '#F1F5F9', backgroundColor: '#FAFBFC',
   },
@@ -1030,7 +1030,7 @@ const styles = StyleSheet.create({
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
-  cellExList: { alignItems: 'center', marginTop: 1, flex: 1 },
+  cellExList: { alignItems: 'center', marginTop: 1 },
   cellExRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   cellExItem: { fontSize: 8, fontWeight: '500', lineHeight: 10, textAlign: 'center' },
   cellExItemSel: { color: '#fff' },
