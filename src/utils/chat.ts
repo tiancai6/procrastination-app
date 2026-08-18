@@ -41,8 +41,13 @@ export const getVisionImageLimit = (model: string): number => {
   return 5;
 };
 
-// GLM 输出 token 上限：免费模型的 max_tokens 合法范围为 [1,1024]，统一封顶避免 400 报错
+// GLM 免费模型的 max_tokens 合法范围为 [1,1024]；豆包/DeepSeek/Gemini 等可给更大预算。
 export const MAX_OUTPUT_TOKENS = 1024;
+export const getChatMaxTokens = (brand: string): number => {
+  const b = (brand || '').toLowerCase();
+  // GLM 免费模型超过 1024 会 400
+  return b === 'glm' ? 1024 : 4096;
+};
 
 // ============ 聊天图片的存储与读取 ============
 const CHAT_IMG_DIR = `${FileSystem.documentDirectory}chat_images/`;
@@ -155,7 +160,7 @@ export const sendChat = async (
     }
   }
 
-  const content = await postChat(cfg, payload, { maxTokens: MAX_OUTPUT_TOKENS, feature });
+  const content = await postChat(cfg, payload, { maxTokens: getChatMaxTokens(cfg.brand), feature });
   return content;
 };
 
@@ -272,10 +277,11 @@ export const sendChatStream = (
       // 火山（豆包）的联网搜索只在 Responses API 可用，且只在用户开了「联网搜索」开关或模型已开启搜索时走该通道；
       // 其余品牌（GLM/Gemini）继续走 Chat Completions 的 postChatStream。
       const useResponsesSearch = cfg.brand === 'doubao' && (forceSearch || cfg.webSearch);
+      const chatMaxTokens = getChatMaxTokens(cfg.brand);
       if (useResponsesSearch) {
-        postChatStreamResponses(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch: true, feature }).then(resolve, reject);
+        postChatStreamResponses(cfg, payload, onToken, signal, { maxTokens: chatMaxTokens, forceSearch: true, feature }).then(resolve, reject);
       } else {
-        postChatStream(cfg, payload, onToken, signal, { maxTokens: MAX_OUTPUT_TOKENS, forceSearch, feature }).then(resolve, reject);
+        postChatStream(cfg, payload, onToken, signal, { maxTokens: chatMaxTokens, forceSearch, feature }).then(resolve, reject);
       }
     })().catch(reject);
   });

@@ -278,87 +278,127 @@ export const postChatStreamResponses = (
       if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
       const url = toResponsesUrl(cfg.baseUrl);
       const { instructions, input } = toResponsesBody(payload);
-      const body: any = {
-        model: cfg.modelId,
-        stream: true,
-        input,
-        tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
-        temperature: opts.temperature ?? 0.7,
-        max_output_tokens: opts.maxTokens ?? 2048,
-      };
-      if (instructions) body.instructions = instructions;
+      // 推理模型（Evolving/2-0-mini）会先把输出 token 花在"思考"上，max_output_tokens 太小会被截断。
+      let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
+      const MAX_OUTPUT_CAP = 20000;
+      let lastEmpty = '模型返回为空';
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', url);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Accept', 'text/event-stream');
-      xhr.setRequestHeader('Authorization', `Bearer ${cfg.apiKey}`);
-      xhr.responseType = 'text';
+      for (let attempt = 0; attempt <= 2; attempt++) {
+        const body: any = {
+          model: cfg.modelId,
+          stream: true,
+          input,
+          tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
+          temperature: opts.temperature ?? 0.7,
+          max_output_tokens: maxOutput,
+        };
+        if (instructions) body.instructions = instructions;
 
-      let loaded = 0;
-      let buffer = '';
-      let full = '';
+        const result: { full: string; truncated: boolean; lastRaw?: any } = await new Promise((res, rej) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', url);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.setRequestHeader('Accept', 'text/event-stream');
+          xhr.setRequestHeader('Authorization', `Bearer ${cfg.apiKey}`);
+          xhr.responseType = 'text';
 
-      const onAbort = () => xhr.abort();
-      if (signal) {
-        if (signal.aborted) {
-          xhr.abort();
-          reject(new Error('已取消'));
-          return;
-        }
-        signal.addEventListener('abort', onAbort);
-      }
+          let loaded = 0;
+          let buffer = '';
+          let full = '';
+          let lastRaw: any;
+          let truncated = false;
 
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 3 || xhr.readyState === 4) {
-          const text = xhr.responseText || '';
-          const newChunk = text.slice(loaded);
-          loaded = text.length;
-          buffer += newChunk;
-          let idx: number;
-          while ((idx = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 1);
-            const t = line.trim();
-            if (!t.startsWith('data:')) continue;
-            const data = t.slice(5).trim();
-            if (data === '[DONE]') continue;
-            try {
-              const json = JSON.parse(data);
-              // 火山 Responses 流式：文本增量事件
-              if (json?.type === 'response.output_text.delta' && json.delta) {
-                full += json.delta;
-                onToken?.(json.delta);
-              }
-              // 流式末尾的 response.completed 事件带 usage（用于用量记录）
-              if (json?.type === 'response.completed' && json.response?.usage) {
-                reportUsage(cfg, json.response.usage, opts.feature || 'AI对话');
-              }
-            } catch {
-              // 非 JSON 行（event 行 / 心跳）忽略
+          const onAbort = () => xhr.abort();
+          const cleanAbort = () => {
+            if (signal) signal.removeEventListener('abort', onAbort);
+          };
+          if (signal) {
+            if (signal.aborted) {
+              xhr.abort();
+              rej(new Error('已取消'));
+              return;
             }
+            signal.addEventListener('abort', onAbort);
           }
-        }
-        if (xhr.readyState === 4) {
-          if (signal) signal.removeEventListener('abort', onAbort);
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (!full) reject(new Error('模型返回为空'));
-            else resolve(full);
-          } else {
-            let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${xhr.status}）`;
-            if (xhr.status === 400) msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已开启「联网搜索」插件。';
-            else if (xhr.status === 401 || xhr.status === 403) msg += '：API Key 无效或没有权限。';
-            else if (xhr.status === 404) msg += '：接口/模型找不到，请确认接入点 ID 正确且支持 Responses API。';
-            else if (xhr.status === 429) msg += '：触发频率限制，请稍候重试。';
-            reject(new Error(msg));
+
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 3 || xhr.readyState === 4) {
+              const text = xhr.responseText || '';
+              const newChunk = text.slice(loaded);
+              loaded = text.length;
+              buffer += newChunk;
+              let idx: number;
+              while ((idx = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 1);
+                const t = line.trim();
+                if (!t.startsWith('data:')) continue;
+                const data = t.slice(5).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const json = JSON.parse(data);
+                  // 火山 Responses 流式：文本增量事件
+                  if (json?.type === 'response.output_text.delta' && json.delta) {
+                    full += json.delta;
+                    onToken?.(json.delta);
+                  }
+                  // 流式末尾的 response.completed 事件带 usage（用于用量记录）
+                  if (json?.type === 'response.completed') {
+                    if (json.response?.usage) reportUsage(cfg, json.response.usage, opts.feature || 'AI调用');
+                    lastRaw = json.response;
+                    if (json.response?.status === 'incomplete' && json.response?.incomplete_details?.reason === 'length') {
+                      truncated = true;
+                    }
+                  }
+                } catch {
+                  // 非 JSON 行（event 行 / 心跳）忽略
+                }
+              }
+            }
+            if (xhr.readyState === 4) {
+              cleanAbort();
+              if (xhr.status >= 200 && xhr.status < 300) {
+                res({ full, truncated, lastRaw });
+              } else {
+                let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${xhr.status}）`;
+                if (xhr.status === 400) msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已开启「联网搜索」插件。';
+                else if (xhr.status === 401 || xhr.status === 403) msg += '：API Key 无效或没有权限。';
+                else if (xhr.status === 404) msg += '：接口/模型找不到，请确认接入点 ID 正确且支持 Responses API。';
+                else if (xhr.status === 429) msg += '：触发频率限制，请稍候重试。';
+                rej(new Error(msg));
+              }
+            }
+          };
+          xhr.onerror = () => {
+            cleanAbort();
+            rej(new Error('网络错误，请检查连接'));
+          };
+          xhr.send(JSON.stringify(body));
+        });
+
+        if (result.full) {
+          // 有内容就算成功；若同时被截断，也返回已生成内容（避免重试导致前端重复）
+          if (result.truncated) {
+            const rawStr = JSON.stringify(result.lastRaw);
+            await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_output_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+            console.warn('[model] ⚠️ Responses 流式输出被截断(length)，但已有部分内容，直接返回。', rawStr.slice(0, 400));
           }
+          return resolve(result.full);
         }
-      };
-      xhr.onerror = () => {
-        if (signal) signal.removeEventListener('abort', onAbort);
-        reject(new Error('网络错误，请检查连接'));
-      };
-      xhr.send(JSON.stringify(body));
+
+        const rawStr = JSON.stringify(result.lastRaw);
+        if (result.truncated && maxOutput < MAX_OUTPUT_CAP) {
+          await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_output_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+          console.error('[model] ⚠️ Responses 流式输出被截断(length)且为空，加大 max_output_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+          maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+          lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+          continue;
+        }
+        await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
+        console.error('[model] ⚠️ Responses 流式 API 返回为空但 HTTP 成功！最后响应:', rawStr.slice(0, 1500));
+        break;
+      }
+      throw new Error(lastEmpty);
     })().catch(reject);
   });
 
@@ -373,75 +413,121 @@ export const postChatStream = (
   new Promise<string>((resolve, reject) => {
     (async () => {
       if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
-      // 🔧 运行时保护：豆包模型标识必须是 ep-xxxx
+      // 运行时保护：豆包模型标识必须是 ep-xxxx
       if (cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-')) {
         console.warn(`[model] ⚠️ 豆包模型标识 "${cfg.modelId}" 不是 ep- 开头的接入点 ID！火山方舟可能无法正确路由此请求。`);
       }
+      // 推理模型（Evolving/2-0-mini）会先把输出 token 花在"思考"上，max_tokens 太小会被截断。
+      let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
+      const MAX_OUTPUT_CAP = 20000;
+      let lastEmpty = '模型返回为空';
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', cfg.baseUrl);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Accept', 'application/json');
-      xhr.setRequestHeader('Authorization', `Bearer ${cfg.apiKey}`);
-      xhr.responseType = 'text';
+      for (let attempt = 0; attempt <= 2; attempt++) {
+        const result: { full: string; truncated: boolean; lastRaw?: any } = await new Promise((res, rej) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', cfg.baseUrl);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.setRequestHeader('Accept', 'application/json');
+          xhr.setRequestHeader('Authorization', `Bearer ${cfg.apiKey}`);
+          xhr.responseType = 'text';
 
-      let loaded = 0;
-      let buffer = '';
-      let full = '';
+          let loaded = 0;
+          let buffer = '';
+          let full = '';
+          let lastRaw: any;
+          let truncated = false;
 
-      const onAbort = () => xhr.abort();
-      if (signal) {
-        if (signal.aborted) {
-          xhr.abort();
-          reject(new Error('已取消'));
-          return;
-        }
-        signal.addEventListener('abort', onAbort);
-      }
-
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 3 || xhr.readyState === 4) {
-          const text = xhr.responseText || '';
-          const newChunk = text.slice(loaded);
-          loaded = text.length;
-          buffer += newChunk;
-          let idx: number;
-          while ((idx = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 1);
-            const t = line.trim();
-            if (!t.startsWith('data:')) continue;
-            const data = t.slice(5).trim();
-            if (data === '[DONE]') continue;
-            try {
-              const json = JSON.parse(data);
-              const delta: string | undefined = json?.choices?.[0]?.delta?.content;
-              if (delta) {
-                full += delta;
-                onToken?.(delta);
-              }
-              // 部分供应商在流式末尾的 chunk 带 usage（best-effort，用于用量记录）
-              if (json?.usage) reportUsage(cfg, json.usage, opts.feature || 'AI对话');
-            } catch {
-              // 非 JSON 行（心跳）忽略
+          const onAbort = () => xhr.abort();
+          const cleanAbort = () => {
+            if (signal) signal.removeEventListener('abort', onAbort);
+          };
+          if (signal) {
+            if (signal.aborted) {
+              xhr.abort();
+              rej(new Error('已取消'));
+              return;
             }
+            signal.addEventListener('abort', onAbort);
           }
-        }
-        if (xhr.readyState === 4) {
-          if (signal) signal.removeEventListener('abort', onAbort);
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (!full) reject(new Error('模型返回为空'));
-            else resolve(full);
-          } else {
-            reject(new Error(`${BRAND_PRESETS[cfg.brand].label} 请求失败（${xhr.status}），请检查网络或 API Key`));
+
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 3 || xhr.readyState === 4) {
+              const text = xhr.responseText || '';
+              const newChunk = text.slice(loaded);
+              loaded = text.length;
+              buffer += newChunk;
+              let idx: number;
+              while ((idx = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 1);
+                const t = line.trim();
+                if (!t.startsWith('data:')) continue;
+                const data = t.slice(5).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const json = JSON.parse(data);
+                  const delta: string | undefined = json?.choices?.[0]?.delta?.content;
+                  if (delta) {
+                    full += delta;
+                    onToken?.(delta);
+                  }
+                  // 检测流式截断
+                  const finishReason = json?.choices?.[0]?.finish_reason;
+                  if (finishReason) {
+                    lastRaw = json;
+                    if (finishReason === 'length') truncated = true;
+                  }
+                  // 部分供应商在流式末尾的 chunk 带 usage（best-effort，用于用量记录）
+                  if (json?.usage) reportUsage(cfg, json.usage, opts.feature || 'AI调用');
+                } catch {
+                  // 非 JSON 行（心跳）忽略
+                }
+              }
+            }
+            if (xhr.readyState === 4) {
+              cleanAbort();
+              if (xhr.status >= 200 && xhr.status < 300) {
+                res({ full, truncated, lastRaw });
+              } else {
+                let msg = `${BRAND_PRESETS[cfg.brand].label} 请求失败（${xhr.status}）`;
+                if (xhr.status === 400) msg += '：请求被拒绝（400）。常见原因：①开启了「联网搜索」但当前品牌在 Chat Completions 端点不支持该工具；②模型标识/接口填错。';
+                else if (xhr.status === 401 || xhr.status === 403) msg += '：API Key 无效或没有权限。';
+                else if (xhr.status === 404) msg += '：接口/模型找不到，请确认模型标识是否正确。';
+                else if (xhr.status === 429) msg += '：触发频率限制，请稍候重试。';
+                rej(new Error(msg));
+              }
+            }
+          };
+          xhr.onerror = () => {
+            cleanAbort();
+            rej(new Error('网络错误，请检查连接'));
+          };
+          xhr.send(JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput }, true)));
+        });
+
+        if (result.full) {
+          // 有内容就算成功；若同时被截断，也返回已生成内容（避免重试导致前端重复）
+          if (result.truncated) {
+            const rawStr = JSON.stringify(result.lastRaw);
+            await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+            console.warn('[model] ⚠️ 流式输出被截断(length)，但已有部分内容，直接返回。', rawStr.slice(0, 400));
           }
+          return resolve(result.full);
         }
-      };
-      xhr.onerror = () => {
-        if (signal) signal.removeEventListener('abort', onAbort);
-        reject(new Error('网络错误，请检查连接'));
-      };
-      xhr.send(JSON.stringify(buildBody(cfg, payload, opts, true)));
+
+        const rawStr = JSON.stringify(result.lastRaw);
+        if (result.truncated && maxOutput < MAX_OUTPUT_CAP) {
+          await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+          console.error('[model] ⚠️ 流式输出被截断(length)且为空，加大 max_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+          maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+          lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+          continue;
+        }
+        await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
+        console.error('[model] ⚠️ 流式 API 返回为空但 HTTP 成功！最后响应:', rawStr.slice(0, 1500));
+        break;
+      }
+      throw new Error(lastEmpty);
     })().catch(reject);
   });
 
