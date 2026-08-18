@@ -9,6 +9,8 @@ import {
   Alert,
   Modal,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Svg, Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -274,11 +276,12 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const month = cursor.getMonth();
     const first = new Date(year, month, 1);
     const start = new Date(year, month, 1 - first.getDay());
+    const last = new Date(year, month + 1, 0);
+    // 只生成覆盖当月最后一天的那个周六为止的格子，避免强制 6 行造成下方空白
+    const end = new Date(year, month + 1, 6 - last.getDay());
     const cells: Date[] = [];
-    for (let i = 0; i < 42; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      cells.push(d);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      cells.push(new Date(d));
     }
     return cells;
   }, [cursor]);
@@ -787,7 +790,10 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
 
       {/* —— 日期详情 Modal（日/月/周/年 点击日期后弹出） —— */}
       <Modal visible={dayModalVisible} animationType="slide" transparent onRequestClose={() => setDayModalVisible(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modalContent}>
             {/* Modal 头部 */}
             <View style={styles.modalHeader}>
@@ -803,7 +809,11 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.modalScroll}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               {/* 摘要 */}
               {dayExercises.length > 0 && (
                 <View style={styles.mDaySummary}>
@@ -960,10 +970,11 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
                 )}
               </View>
 
-              <View style={{ height: 40 }} />
+              {/* 键盘弹出时底部留足滚动余量，确保最下方的输入框能被滚上来 */}
+              <View style={{ height: 140 }} />
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <TrendPage visible={trendVisible} onClose={() => setTrendVisible(false)} />
@@ -1004,27 +1015,27 @@ const styles = StyleSheet.create({
   navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, paddingVertical: 4 },
   navTitle: { fontSize: 16, fontWeight: '600', color: COLORS.text, minWidth: 150, textAlign: 'center' },
 
-  weekHeader: { flexDirection: 'row', marginTop: 4, marginBottom: 2, paddingHorizontal: 6 },
+  weekHeader: { flexDirection: 'row', marginTop: 4, marginBottom: 4, paddingHorizontal: 6 },
   weekHeaderText: { flex: 1, textAlign: 'center', fontSize: 11.5, color: COLORS.textLight },
   grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 6 },
   cell: {
-    width: '14.28%', aspectRatio: 0.58, alignItems: 'center', justifyContent: 'flex-start',
-    borderRadius: 7, paddingTop: 2, paddingHorizontal: 2, marginBottom: 1,
-    borderWidth: 1, borderColor: '#F1F5F9',
+    width: '14.28%', aspectRatio: 0.78, alignItems: 'center', justifyContent: 'flex-start',
+    borderRadius: 7, paddingTop: 4, paddingHorizontal: 2, marginBottom: 2,
+    borderWidth: 1, borderColor: '#F1F5F9', backgroundColor: '#FAFBFC',
   },
   cellOtherMonth: { opacity: 0.45 },
   cellToday: { borderWidth: 1.5, borderColor: COLORS.primary, backgroundColor: COLORS.secondary },
   cellSelected: { backgroundColor: COLORS.primary, borderWidth: 1.5, borderColor: COLORS.primary },
-  cellNum: { fontSize: 12, color: COLORS.text, fontWeight: '600' },
+  cellNum: { fontSize: 11, color: COLORS.text, fontWeight: '600' },
   cellNumDim: { color: COLORS.textLighter },
   cellNumToday: { color: COLORS.primary, fontWeight: '700' },
   cellNumSel: { color: '#fff', fontWeight: '700' },
-  cellExList: { alignItems: 'center', marginTop: 0, flex: 1 },
+  cellExList: { alignItems: 'center', marginTop: 1, flex: 1 },
   cellExRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  cellExItem: { fontSize: 9, fontWeight: '500', lineHeight: 11, textAlign: 'center' },
+  cellExItem: { fontSize: 8, fontWeight: '500', lineHeight: 10, textAlign: 'center' },
   cellExItemSel: { color: '#fff' },
-  cellExDot: { width: 4, height: 4, borderRadius: 2, flexShrink: 0 },
-  cellExMore: { fontSize: 8, color: '#fff', lineHeight: 12 },
+  cellExDot: { width: 3, height: 3, borderRadius: 1.5, flexShrink: 0 },
+  cellExMore: { fontSize: 7, color: '#fff', lineHeight: 10 },
 
   weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 2 },
   wkCell: {
@@ -1046,7 +1057,7 @@ const styles = StyleSheet.create({
   yearMonth: { fontSize: 10, color: COLORS.textLight, marginTop: 6 },
   yearMin: { fontSize: 9, color: COLORS.textLighter, marginTop: 2 },
 
-  hint: { fontSize: 11, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 20 },
+  hint: { fontSize: 11, color: COLORS.textLighter, textAlign: 'center', paddingVertical: 2, paddingHorizontal: 20 },
 
   detailPanel: {
     backgroundColor: COLORS.card, marginHorizontal: 16, marginTop: 4, borderRadius: 16, padding: 16,
