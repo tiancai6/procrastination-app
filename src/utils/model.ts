@@ -89,49 +89,63 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   if (cfg.brand === 'doubao' && !cfg.modelId.startsWith('ep-')) {
     console.warn(`[model] ⚠️ 豆包模型标识 "${cfg.modelId}" 不是 ep- 开头的接入点 ID！火山方舟可能无法正确路由此请求。请到「管理 AI 模型」修正该模型的标识为 ep-xxxx 格式。`);
   }
-  const res = await fetch(cfg.baseUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify(buildBody(cfg, payload, opts, false)),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('[model] request failed', cfg.brand, res.status, errText);
-    let msg = `${BRAND_PRESETS[cfg.brand].label} 请求失败（${res.status}）`;
-    if (res.status === 400) {
-      msg += '：请求被服务器拒绝（400）。常见原因：①开启了「联网搜索」但当前品牌在 Chat Completions 端点不支持该工具（豆包暂不支持，请到「管理 AI 模型」关掉该模型的联网搜索开关）；②模型标识/接口填错。';
-    } else if (res.status === 401 || res.status === 403) {
-      msg += '：API Key 无效或没有权限，请检查密钥。';
-    } else if (res.status === 404) {
-      if (cfg.brand === 'doubao') {
-        msg += '：接口/模型找不到。火山方舟须填推理接入点 ID（ep-xxxx），不能直接填模型名。请确认接入点 ID 正确且该接入点已启用。';
-      } else {
-        msg += '：模型/接口找不到，请确认模型标识是否正确（可能已被下架或改名）。';
+  // 🔧 推理模型（如 doubao-seed-2-0-mini）会先把大量输出 token 花在"思考"上，
+  // 若 max_tokens 太小会被截断（finish_reason=length）导致 content 为空。这里检测到截断就自动翻倍额度重试。
+  let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
+  const MAX_OUTPUT_CAP = 8000;
+  let lastEmpty = '模型返回为空';
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    const res = await fetch(cfg.baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput }, false)),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error('[model] request failed', cfg.brand, res.status, errText);
+      let msg = `${BRAND_PRESETS[cfg.brand].label} 请求失败（${res.status}）`;
+      if (res.status === 400) {
+        msg += '：请求被服务器拒绝（400）。常见原因：①开启了「联网搜索」但当前品牌在 Chat Completions 端点不支持该工具（豆包暂不支持，请到「管理 AI 模型」关掉该模型的联网搜索开关）；②模型标识/接口填错。';
+      } else if (res.status === 401 || res.status === 403) {
+        msg += '：API Key 无效或没有权限，请检查密钥。';
+      } else if (res.status === 404) {
+        if (cfg.brand === 'doubao') {
+          msg += '：接口/模型找不到。火山方舟须填推理接入点 ID（ep-xxxx），不能直接填模型名。请确认接入点 ID 正确且该接入点已启用。';
+        } else {
+          msg += '：模型/接口找不到，请确认模型标识是否正确（可能已被下架或改名）。';
+        }
+      } else if (res.status === 429) {
+        msg += '：触发频率限制，请稍候重试。';
       }
-    } else if (res.status === 429) {
-      msg += '：触发频率限制，请稍候重试。';
+      if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
+      throw new Error(msg);
     }
-    if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
-    throw new Error(msg);
-  }
-  const data = await res.json();
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
-  reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-  // 🔧 无论 content 是否为空，都存一份原始响应——用于排查"有token消耗却返回为空"等诡异问题
-  const rawStr = JSON.stringify(data);
-  if (content) {
-    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
-  } else {
-    // content 为空时存完整响应体（可能模型返回了 tool_call / 字段路径不同 / 结构异常）
+    const data = await res.json();
+    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
+    // 🔧 无论 content 是否为空，都存一份原始响应——用于排查"有token消耗却返回为空"等诡异问题
+    const rawStr = JSON.stringify(data);
+    if (content) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+      return content;
+    }
+    // 截断：思考耗尽了输出额度 → 加大额度重试
+    if (data?.choices?.[0]?.finish_reason === 'length' && maxOutput < MAX_OUTPUT_CAP) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+      console.error('[model] ⚠️ 输出被截断(length)，加大 max_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+      maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+      continue;
+    }
     await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
     console.error('[model] ⚠️ 模型返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
+    throw new Error('模型返回为空');
   }
-  if (!content) throw new Error('模型返回为空');
-  return content;
+  throw new Error(lastEmpty);
 };
 
 // ============ 火山方舟（豆包）Responses API 通道 ============
@@ -181,56 +195,71 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   if (!cfg?.apiKey) throw new Error('未配置 API Key，请先到「我的 → 管理 AI 模型」添加模型');
   const url = toResponsesUrl(cfg.baseUrl);
   const { instructions, input } = toResponsesBody(payload);
-  const body: any = {
-    model: cfg.modelId,
-    stream: false,
-    input,
-    tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
-    temperature: opts.temperature ?? 0.7,
-    max_output_tokens: opts.maxTokens ?? 1000,
-  };
-  if (instructions) body.instructions = instructions;
-  // JSON 模式（火山 Responses API 同样兼容 response_format）。与 web_search 工具冲突时跳过，避免 400。
-  if (opts.jsonMode && !body.tools) body.response_format = { type: 'json_object' };
+  // 🔧 推理模型会先把输出额度花在"思考"上，阈值太小会被截断（status=incomplete/reason=length）→ content 为空。
+  // 检测到截断就自动翻倍 max_output_tokens 重试，直至上限。
+  let maxOutput = opts.maxTokens ?? 1000;
+  const MAX_OUTPUT_CAP = 8000;
+  let lastEmpty = '模型返回为空';
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    const body: any = {
+      model: cfg.modelId,
+      stream: false,
+      input,
+      tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
+      temperature: opts.temperature ?? 0.7,
+      max_output_tokens: maxOutput,
+    };
+    if (instructions) body.instructions = instructions;
+    // JSON 模式（火山 Responses API 同样兼容 response_format）。与 web_search 工具冲突时跳过，避免 400。
+    if (opts.jsonMode && !body.tools) body.response_format = { type: 'json_object' };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('[model] responses request failed', cfg.brand, res.status, errText);
-    let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${res.status}）`;
-    if (res.status === 400) {
-      msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已在控制台为该接入点开启「联网搜索」插件。';
-    } else if (res.status === 401 || res.status === 403) {
-      msg += '：API Key 无效或没有权限，请检查密钥。';
-    } else if (res.status === 404) {
-      msg += '：接口/模型找不到，请确认接入点 ID（ep-xxxx）正确，且该接入点已支持 Responses API 与联网搜索。';
-    } else if (res.status === 429) {
-      msg += '：触发频率限制，请稍候重试。';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error('[model] responses request failed', cfg.brand, res.status, errText);
+      let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${res.status}）`;
+      if (res.status === 400) {
+        msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已在控制台为该接入点开启「联网搜索」插件。';
+      } else if (res.status === 401 || res.status === 403) {
+        msg += '：API Key 无效或没有权限，请检查密钥。';
+      } else if (res.status === 404) {
+        msg += '：接口/模型找不到，请确认接入点 ID（ep-xxxx）正确，且该接入点已支持 Responses API 与联网搜索。';
+      } else if (res.status === 429) {
+        msg += '：触发频率限制，请稍候重试。';
+      }
+      if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
+      throw new Error(msg);
     }
-    if (errText) msg += ` 详情：${errText.slice(0, 400)}`;
-    throw new Error(msg);
-  }
-  const data = await res.json();
-  const content = extractResponsesText(data);
-  reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-  // 🔧 无论 content 是否为空，都存原始响应
-  const rawStr = JSON.stringify(data);
-  if (content) {
-    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
-  } else {
+    const data = await res.json();
+    const content = extractResponsesText(data);
+    reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
+    // 🔧 无论 content 是否为空，都存原始响应
+    const rawStr = JSON.stringify(data);
+    if (content) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+      return content;
+    }
+    // 截断：思考耗尽了输出额度 → 加大额度重试
+    if (data?.status === 'incomplete' && data?.incomplete_details?.reason === 'length' && maxOutput < MAX_OUTPUT_CAP) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_output_tokens=${maxOutput} ${rawStr}`).catch(() => {});
+      console.error('[model] ⚠️ Responses 输出被截断(length)，加大 max_output_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+      maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+      continue;
+    }
     await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
     console.error('[model] ⚠️ Responses API 返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
+    throw new Error('模型返回为空');
   }
-  if (!content) throw new Error('模型返回为空');
-  return content;
+  throw new Error(lastEmpty);
 };
 
 // 流式版本：走 Responses API（/api/v3/responses），XHR 增量解析 SSE。

@@ -512,8 +512,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 2000, forceSearch: true, jsonMode: true, feature: '三餐估算' })
-        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 2000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算' });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: true, jsonMode: true, feature: '三餐估算' })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算' });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
@@ -760,8 +760,9 @@ const requestMealBatch = async (
   const outro = `\n\n请返回一个 JSON 对象，结构为 {"results": [...]}，其中 results 数组的每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…）。不要额外输出任何文字，也不要返回裸数组。`;
   const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
-  // 输出预算：按餐数动态给，避免多餐 JSON 被截断，又不超模型上限
-  const maxTokens = Math.min(4000, Math.max(1200, chunk.length * 350 + 400));
+  // 输出预算：推理模型（如 doubao-seed-2-0-mini）会先把大量 token 花在"思考"上，预算必须够大，
+  // 否则被截断（status=incomplete/length）导致正文为空。每餐 1500 + 基础 800，下限 4000，上限 8000。
+  const maxTokens = Math.min(8000, Math.max(4000, chunk.length * 1500 + 800));
   const useResponses = cfg.brand === 'doubao' && needSearch;
   const messages = [
     { role: 'system' as const, content: NUTRITION_BATCH_SYSTEM_PROMPT },
