@@ -93,7 +93,9 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   // 若 max_tokens 太小会被截断（finish_reason=length）导致 content 为空。这里检测到截断就自动翻倍额度重试。
   // Evolving 官方最大回答 256K，这里把重试上限放到 20000 留足安全余量（日常三餐根本用不到这么多）。
   let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
-  const MAX_OUTPUT_CAP = 20000;
+  // GLM 免费模型 max_tokens 上限仅 1024，翻倍会 400，故按品牌设上限；其余品牌（豆包/DeepSeek/Gemini）给到 32000，
+  // 配合下方「截断自动翻倍重试」，长回答也能一轮拿到完整正文。
+  const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
     const res = await fetch(cfg.baseUrl, {
@@ -127,20 +129,20 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
     }
     const data = await res.json();
     const content: string | undefined = data?.choices?.[0]?.message?.content;
+    const finishReason: string | undefined = data?.choices?.[0]?.finish_reason;
     reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-    // 🔧 无论 content 是否为空，都存一份原始响应——用于排查"有token消耗却返回为空"等诡异问题
     const rawStr = JSON.stringify(data);
-    if (content) {
-      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
-      return content;
-    }
-    // 截断：思考耗尽了输出额度 → 加大额度重试
-    if (data?.choices?.[0]?.finish_reason === 'length' && maxOutput < MAX_OUTPUT_CAP) {
+    // 🔧 截断（思考耗尽额度）优先重试：哪怕已吐出部分正文也加大额度重生成完整回答；已到上限才退化为返回已有内容
+    if (finishReason === 'length' && maxOutput < MAX_OUTPUT_CAP) {
       await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_tokens=${maxOutput} ${rawStr}`).catch(() => {});
       console.error('[model] ⚠️ 输出被截断(length)，加大 max_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
       maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
-      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成完整正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
       continue;
+    }
+    if (content) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+      return content;
     }
     await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
     console.error('[model] ⚠️ 模型返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
@@ -199,7 +201,8 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   // 🔧 推理模型会先把输出额度花在"思考"上，阈值太小会被截断（status=incomplete/reason=length）→ content 为空。
   // 检测到截断就自动翻倍 max_output_tokens 重试，直至上限。Evolving 官方最大回答 256K，这里上限放到 20000。
   let maxOutput = opts.maxTokens ?? 1000;
-  const MAX_OUTPUT_CAP = 20000;
+  // GLM 免费模型 max_tokens 上限仅 1024，翻倍会 400，故按品牌设上限；其余品牌给到 32000，长回答也能一轮拿全。
+  const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
     const body: any = {
@@ -241,20 +244,20 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     }
     const data = await res.json();
     const content = extractResponsesText(data);
+    const truncated = data?.status === 'incomplete' && data?.incomplete_details?.reason === 'length';
     reportUsage(cfg, data?.usage, opts.feature || 'AI调用');
-    // 🔧 无论 content 是否为空，都存原始响应
     const rawStr = JSON.stringify(data);
-    if (content) {
-      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
-      return content;
-    }
-    // 截断：思考耗尽了输出额度 → 加大额度重试
-    if (data?.status === 'incomplete' && data?.incomplete_details?.reason === 'length' && maxOutput < MAX_OUTPUT_CAP) {
+    // 🔧 截断（思考耗尽额度）优先重试：哪怕已吐出部分正文也加大额度重生成完整回答；已到上限才退化为返回已有内容
+    if (truncated && maxOutput < MAX_OUTPUT_CAP) {
       await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_output_tokens=${maxOutput} ${rawStr}`).catch(() => {});
       console.error('[model] ⚠️ Responses 输出被截断(length)，加大 max_output_tokens 重试:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
       maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
-      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+      lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成完整正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
       continue;
+    }
+    if (content) {
+      await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
+      return content;
     }
     await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
     console.error('[model] ⚠️ Responses API 返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
@@ -280,7 +283,8 @@ export const postChatStreamResponses = (
       const { instructions, input } = toResponsesBody(payload);
       // 推理模型（Evolving/2-0-mini）会先把输出 token 花在"思考"上，max_output_tokens 太小会被截断。
       let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
-      const MAX_OUTPUT_CAP = 20000;
+      // GLM 免费模型 max_tokens 上限仅 1024，翻倍会 400，故按品牌设上限；其余品牌给到 32000，长回答也能一轮拿全。
+      const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
       let lastEmpty = '模型返回为空';
 
       for (let attempt = 0; attempt <= 2; attempt++) {
@@ -377,12 +381,19 @@ export const postChatStreamResponses = (
         });
 
         if (result.full) {
-          // 有内容就算成功；若同时被截断，也返回已生成内容（避免重试导致前端重复）
-          if (result.truncated) {
+          // 未被截断：正常返回完整内容
+          if (!result.truncated) return resolve(result.full);
+          // 已吐出部分内容但被截断：仍有额度空间则加大 max_output_tokens 重新生成完整回答，避免返回半截
+          if (maxOutput < MAX_OUTPUT_CAP) {
             const rawStr = JSON.stringify(result.lastRaw);
             await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_output_tokens=${maxOutput} ${rawStr}`).catch(() => {});
-            console.warn('[model] ⚠️ Responses 流式输出被截断(length)，但已有部分内容，直接返回。', rawStr.slice(0, 400));
+            console.error('[model] ⚠️ Responses 流式输出被截断(length)但已有部分内容，加大 max_output_tokens 重试以获取完整回答:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+            maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+            lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成完整正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+            continue;
           }
+          // 已到额度上限仍被截断：返回当前已生成的最好结果（避免死循环，也避免返回空）
+          console.warn('[model] ⚠️ Responses 流式输出被截断(length)且已到额度上限，返回已生成的部分内容。');
           return resolve(result.full);
         }
 
@@ -419,7 +430,8 @@ export const postChatStream = (
       }
       // 推理模型（Evolving/2-0-mini）会先把输出 token 花在"思考"上，max_tokens 太小会被截断。
       let maxOutput = opts.maxTokens ?? defaultMaxTokens(cfg);
-      const MAX_OUTPUT_CAP = 20000;
+      // GLM 免费模型 max_tokens 上限仅 1024，翻倍会 400，故按品牌设上限；其余品牌给到 32000，长回答也能一轮拿全。
+      const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
       let lastEmpty = '模型返回为空';
 
       for (let attempt = 0; attempt <= 2; attempt++) {
@@ -506,12 +518,19 @@ export const postChatStream = (
         });
 
         if (result.full) {
-          // 有内容就算成功；若同时被截断，也返回已生成内容（避免重试导致前端重复）
-          if (result.truncated) {
+          // 未被截断：正常返回完整内容
+          if (!result.truncated) return resolve(result.full);
+          // 已吐出部分内容但被截断：仍有额度空间则加大 max_tokens 重新生成完整回答，避免返回半截
+          if (maxOutput < MAX_OUTPUT_CAP) {
             const rawStr = JSON.stringify(result.lastRaw);
             await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[TRUNCATED length] max_tokens=${maxOutput} ${rawStr}`).catch(() => {});
-            console.warn('[model] ⚠️ 流式输出被截断(length)，但已有部分内容，直接返回。', rawStr.slice(0, 400));
+            console.error('[model] ⚠️ 流式输出被截断(length)但已有部分内容，加大 max_tokens 重试以获取完整回答:', maxOutput, '→', Math.min(maxOutput * 2, MAX_OUTPUT_CAP));
+            maxOutput = Math.min(maxOutput * 2, MAX_OUTPUT_CAP);
+            lastEmpty = '模型输出被截断（思考耗尽了输出额度，未生成完整正文）。已自动加大额度重试仍失败，请到「管理 AI 模型」换非推理模型或关闭联网搜索。';
+            continue;
           }
+          // 已到额度上限仍被截断：返回当前已生成的最好结果（避免死循环，也避免返回空）
+          console.warn('[model] ⚠️ 流式输出被截断(length)且已到额度上限，返回已生成的部分内容。');
           return resolve(result.full);
         }
 

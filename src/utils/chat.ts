@@ -43,13 +43,13 @@ export const getVisionImageLimit = (model: string): number => {
 
 // GLM 免费模型的 max_tokens 合法范围为 [1,1024]；豆包/DeepSeek/Gemini 等可给更大预算。
 // 注意：Evolving 是推理模型，会把一部分输出额度花在「思考」上，起始预算太小会被思考吃光导致正文为空/被截断。
-// 这里把非 GLM 的聊天起始预算设为 8000（与营养估算对齐），给思考+正文留足余量；真遇到超长回复再由 model.ts 的
-// 「截断自动翻倍重试」兜底到 20000，不会返回空。
+// 这里把非 GLM 的聊天起始预算设为 12000（比营养估算更宽，聊天常要长回答），给思考+正文留足余量；
+// 真遇到超长回复，model.ts 的「截断自动翻倍重试」会一路加到 32000 并重新生成完整回答，不会再返回半截或空。
 export const MAX_OUTPUT_TOKENS = 1024;
 export const getChatMaxTokens = (brand: string): number => {
   const b = (brand || '').toLowerCase();
   // GLM 免费模型超过 1024 会 400
-  return b === 'glm' ? 1024 : 8000;
+  return b === 'glm' ? 1024 : 12000;
 };
 
 // ============ 聊天图片的存储与读取 ============
