@@ -17,9 +17,15 @@ export interface CallOpts {
 type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 export type ChatPayload = { role: string; content: string | ContentPart[] }[];
 
-const buildTools = (cfg: ModelConfig, forceSearch?: boolean): any[] | undefined => {
+const payloadHasImage = (payload: ChatPayload): boolean =>
+  payload.some((m) => Array.isArray(m.content) && m.content.some((p: any) => p?.type === 'image_url'));
+
+const buildTools = (cfg: ModelConfig, forceSearch?: boolean, hasImage?: boolean): any[] | undefined => {
   const tool = BRAND_PRESETS[cfg.brand].searchTool;
   if (!tool) return undefined;
+  // 🔧 视觉请求（带图片）不挂联网搜索工具：GLM/Gemini 等品牌的 Chat Completions 端点不支持「图片 + 工具」同发，
+  // 会直接 400。识图本身也不需要联网搜索，故带图时一律跳过工具注入。
+  if (hasImage) return undefined;
   if (!cfg.webSearch && !forceSearch) return undefined;
   // 豆包（火山）的 web_search 工具只在 Responses API 端点（/api/v3/responses）可用；本 App 的
   // Chat Completions 路径（postChat / postChatStream）不认该工具 → 这里仍对豆包返回 undefined（避免 400）。
@@ -67,6 +73,7 @@ export const parseJsonContent = (raw: string): any => {
 };
 
 const buildBody = (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts, stream: boolean) => {
+  const hasImage = payloadHasImage(payload);
   const body: any = {
     model: cfg.modelId,
     messages: payload,
@@ -74,7 +81,7 @@ const buildBody = (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts, strea
     max_tokens: opts.maxTokens ?? defaultMaxTokens(cfg),
     stream,
   };
-  const tools = buildTools(cfg, opts.forceSearch);
+  const tools = buildTools(cfg, opts.forceSearch, hasImage);
   if (tools) body.tools = tools;
   // JSON 模式：让 API 强制返回合法 JSON 对象，降低「模型不按格式返回」导致解析失败的概率。
   // 注意：OpenAI 兼容接口禁止 json_object 与 tools 同时出现，故仅在无 tools 时附加，避免 400。
@@ -205,11 +212,13 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
+    const hasImage = payloadHasImage(payload);
     const body: any = {
       model: cfg.modelId,
       stream: false,
       input,
-      tools: opts.forceSearch ? [{ type: 'web_search' }] : undefined,
+      // 🔧 视觉请求（带图片）不挂联网搜索工具：识图不需要联网，且部分品牌图片+工具组合会 400
+      tools: opts.forceSearch && !hasImage ? [{ type: 'web_search' }] : undefined,
       temperature: opts.temperature ?? 0.7,
       max_output_tokens: maxOutput,
     };
@@ -560,6 +569,10 @@ export const callModel = async (payload: ChatPayload, useVision: boolean, opts: 
   if (!cfg) throw new Error('未配置任何模型，请先到「我的 → 管理 AI 模型」添加');
   if (useVision && !cfg.isVision) {
     throw new Error('当前用于图片识别的模型没有勾选「支持图片」。请到「管理 AI 模型」把某个支持图片的模型（如 GLM 的 glm-4v-flash、豆包 Evolving）勾选「设为视觉模型」后再试。');
+  }
+  // DeepSeek 全系无视觉能力，即便误勾了「支持图片」，发图也会 400，提前拦截给出明确提示
+  if (useVision && cfg.brand === 'deepseek') {
+    throw new Error('DeepSeek 不支持图片识别。请到「管理 AI 模型」把视觉模型换成豆包 Evolving 或 GLM 的 glm-4v-flash。');
   }
   // 按品牌 clamp 视觉请求的 max_tokens 上限（GLM 免费档 ≤1024，写死 2000 会被 API 拒）
   const visionCap = cfg.brand === 'glm' ? 1024 : cfg.brand === 'doubao' ? 8000 : 4096;
