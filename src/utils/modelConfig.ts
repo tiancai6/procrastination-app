@@ -149,8 +149,12 @@ export const getDefaultVisionModelCfg = async (): Promise<ModelConfig | null> =>
 // 取当前要用的模型配置：发图片用视觉模型，否则用默认文本模型
 export const getActiveConfig = async (useVision: boolean): Promise<ModelConfig | null> => {
   if (useVision) {
+    const defaultModel = await getDefaultModel();
+    // ① 若默认文本模型本身就支持图片，优先用它（符合"默认模型即识图模型"的直觉），避免被其它专门视觉模型抢走
+    if (defaultModel && defaultModel.isVision) return defaultModel;
+    // ② 否则：专门的默认视觉模型 → 任意支持图片的模型 → 回退到默认文本模型
     const v = await getDefaultVisionModelCfg();
-    return v || (await getDefaultModel());
+    return v || defaultModel;
   }
   return await getDefaultModel();
 };
