@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
@@ -121,13 +123,15 @@ const FoodLibraryPage: React.FC = () => {
         Alert.alert('权限不足', useCamera ? '需要相机权限才能拍照识别配料表' : '需要相册权限才能上传配料表');
         return;
       }
-      const res = useCamera
-        ? await ImagePicker.launchCameraAsync({ base64: true, quality: 0.6, mediaTypes: ImagePicker.MediaTypeOptions.Images })
-        : await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.6, mediaTypes: ImagePicker.MediaTypeOptions.Images });
+      const pickerOpts: ImagePicker.ImagePickerOptions = {
+        quality: 0.8,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      };
+      const res = useCamera ? await ImagePicker.launchCameraAsync(pickerOpts) : await ImagePicker.launchImageLibraryAsync(pickerOpts);
       if (res.canceled || !res.assets || !res.assets.length) return;
       const asset = res.assets[0];
-      if (!asset.base64) {
-        Alert.alert('提示', '无法读取图片数据，请换一张或手动填写');
+      if (!asset.uri) {
+        Alert.alert('提示', '无法读取图片，请换一张或手动填写');
         return;
       }
       const visCfg = await getActiveConfig(true);
@@ -144,7 +148,23 @@ const FoodLibraryPage: React.FC = () => {
         return;
       }
       setRecognizing(true);
-      const dataUri = `data:${asset.type || 'image/jpeg'};base64,${asset.base64}`;
+      // 统一清洗图片：iPhone HEIC → JPEG、大图缩放、格式一致，避免模型报 Invalid base64 image_url
+      let dataUri: string;
+      try {
+        const processed = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1024 } }],
+          { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        if (!processed?.uri) throw new Error('图片处理失败');
+        const base64 = await FileSystem.readAsStringAsync(processed.uri, { encoding: FileSystem.EncodingType.Base64 });
+        dataUri = `data:image/jpeg;base64,${base64}`;
+      } catch (imgErr: any) {
+        console.error('[FoodLibrary] 图片清洗失败', imgErr);
+        Alert.alert('图片处理失败', imgErr?.message ? String(imgErr.message).slice(0, 200) : '请换一张图片或手动填写');
+        setRecognizing(false);
+        return;
+      }
       try {
         const content = await callModel(
           [

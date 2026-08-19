@@ -238,9 +238,9 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[model] responses request failed', cfg.brand, res.status, errText);
-      let msg = `${BRAND_PRESETS[cfg.brand].label} 联网搜索请求失败（${res.status}）`;
+      let msg = `${BRAND_PRESETS[cfg.brand].label} 模型请求失败（${res.status}）`;
       if (res.status === 400) {
-        msg += '：请求被拒绝（400）。火山 Responses API 要求模型标识为接入点 ID（ep-xxxx），且已在控制台为该接入点开启「联网搜索」插件。';
+        msg += '：请求被拒绝（400）。常见原因：模型标识不是 ep-xxxx 接入点格式、接入点未开启对应能力、图片格式/base64 无效，或参数不受该接入点支持。';
       } else if (res.status === 401 || res.status === 403) {
         msg += '：API Key 无效或没有权限，请检查密钥。';
       } else if (res.status === 404) {

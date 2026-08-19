@@ -534,20 +534,20 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected]}
         onPress={() => openDay(s)}
       >
-        <Text style={styles.wkWeekday}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
+        <Text style={[styles.wkWeekday, isSel && styles.wkWeekdaySel]}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
         <Text style={[styles.wkNum, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>{d.getDate()}</Text>
         {typeEntries.length > 0 && (
           <View style={styles.wkExList}>
             {typeEntries.slice(0, 3).map(([type, min], i) => (
               <View key={type} style={styles.wkExRow}>
                 <View style={[styles.wkExDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
-                <Text style={[styles.wkExItem, { color: '#475569' }]}>
+                <Text style={[styles.wkExItem, isSel && styles.wkExItemSel]}>
                   {type} {fmtDur(min)}
                 </Text>
               </View>
             ))}
             {typeEntries.length > 3 && (
-              <Text style={styles.wkExMore}>+{typeEntries.length - 3}</Text>
+              <Text style={[styles.wkExMore, isSel && styles.wkExMoreSel]}>+{typeEntries.length - 3}</Text>
             )}
           </View>
         )}
@@ -1037,18 +1037,21 @@ const styles = StyleSheet.create({
   cellExDot: { width: 3, height: 3, borderRadius: 1.5, flexShrink: 0 },
   cellExMore: { fontSize: 7, color: '#fff', lineHeight: 10 },
 
-  weekStrip: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 2 },
+  weekStrip: { flexDirection: 'row', paddingHorizontal: 6, marginTop: 6, justifyContent: 'space-between' },
   wkCell: {
-    flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: 12, marginHorizontal: 3,
-    backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border,
+    flex: 1, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 2, borderRadius: 14, marginHorizontal: 4,
+    minHeight: 96, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border,
   },
-  wkWeekday: { fontSize: 11, color: COLORS.textLight },
-  wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 2 },
-  wkExList: { alignItems: 'center', marginTop: 2, flex: 1 },
-  wkExRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  wkExItem: { fontSize: 10, fontWeight: '500', lineHeight: 13, textAlign: 'center' },
+  wkWeekday: { fontSize: 11, color: COLORS.textLight, marginBottom: 2 },
+  wkWeekdaySel: { color: '#fff' },
+  wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 3 },
+  wkExList: { alignItems: 'center', marginTop: 4, width: '100%' },
+  wkExRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginVertical: 1 },
+  wkExItem: { fontSize: 10, fontWeight: '500', lineHeight: 13, textAlign: 'center', color: '#475569' },
+  wkExItemSel: { color: '#fff' },
   wkExDot: { width: 5, height: 5, borderRadius: 2.5, flexShrink: 0 },
-  wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13 },
+  wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13, marginTop: 1 },
+  wkExMoreSel: { color: '#fff' },
 
   yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4, alignItems: 'flex-end', height: 170 },
   yearCol: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },
