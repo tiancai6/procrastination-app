@@ -70,7 +70,8 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
       isVision: cfg.isVision,
       webSearch: cfg.webSearch,
       asDefault: cfg.isDefault,
-      asVisionDefault: cfg.isDefaultVision,
+      // 旧数据可能只写了 isVision 或只写了 isDefaultVision，编辑时只要任一开启就显示开
+      asVisionDefault: cfg.isDefaultVision || cfg.isVision,
     });
   };
 
@@ -142,7 +143,8 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
       name: editing.name.trim() || editing.modelId.trim(),
       apiKey: editing.apiKey.trim(),
       modelId: editing.modelId.trim(),
-      isVision: editing.isVision,
+      // UI 上「设为视觉模型」开关控制 asVisionDefault；保存时把能力位 isVision 同步写进去
+      isVision: editing.asVisionDefault,
       webSearch: editing.webSearch,
     };
     try {
@@ -317,7 +319,7 @@ const ModelConfigPage: React.FC<Props> = ({ visible, onClose }) => {
             </View>
             <View style={styles.switchRow}>
               <Text style={styles.switchLabel}>设为视觉模型（发送图片时使用）</Text>
-              <Switch value={editing.asVisionDefault} onValueChange={(v) => setEditing({ ...editing, asVisionDefault: v })} />
+              <Switch value={editing.asVisionDefault} onValueChange={(v) => setEditing({ ...editing, isVision: v, asVisionDefault: v })} />
             </View>
             <View style={styles.switchRow}>
               <Text style={styles.switchLabel}>开启联网搜索（按品牌走 web_search / Google grounding）</Text>

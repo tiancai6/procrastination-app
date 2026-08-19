@@ -128,7 +128,11 @@ export const setDefaultModel = async (id: string): Promise<void> => {
 
 export const setDefaultVisionModel = async (id: string): Promise<void> => {
   const list = await getModelConfigs();
-  list.forEach((x) => (x.isDefaultVision = x.id === id));
+  list.forEach((x) => {
+    x.isDefaultVision = x.id === id;
+    // 设为默认视觉模型时，同步标记它支持图片，避免 isDefaultVision=true 但 isVision=false 的矛盾状态
+    if (x.id === id) x.isVision = true;
+  });
   await persist(list);
 };
 
