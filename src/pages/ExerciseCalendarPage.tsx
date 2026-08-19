@@ -520,8 +520,7 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const isToday = s === todayStr;
     const isSel = s === selected;
     const exercises = allActivity[s]?.exercises || [];
-    const dur = exercises.reduce((sum, e) => sum + (e.durationMin || 0), 0);
-    // 按类型聚合
+    // 按类型聚合，用于展示彩色圆点
     const typeMap = new Map<string, number>();
     exercises.forEach((e) => {
       const t = e.type || '其他';
@@ -531,24 +530,23 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     return (
       <TouchableOpacity
         key={s}
-        style={[styles.wkCell, isToday && styles.cellToday, isSel && styles.cellSelected]}
+        style={[styles.wkCell, isToday && styles.wkCellToday, isSel && styles.wkCellSelected]}
         onPress={() => openDay(s)}
+        activeOpacity={0.75}
       >
-        <Text style={[styles.wkWeekday, isSel && styles.wkWeekdaySel]}>{WEEK_LABELS[d.getDay()].replace('周', '')}</Text>
-        <Text style={[styles.wkNum, isToday && styles.cellNumToday, isSel && styles.cellNumSel]}>{d.getDate()}</Text>
-        {typeEntries.length > 0 && (
-          <View style={styles.wkExList}>
-            {typeEntries.slice(0, 3).map(([type, min], i) => (
-              <View key={type} style={styles.wkExRow}>
-                <View style={[styles.wkExDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
-                <Text style={[styles.wkExItem, isSel && styles.wkExItemSel]}>
-                  {type} {fmtDur(min)}
-                </Text>
-              </View>
+        <Text style={[styles.wkNum, isToday && styles.wkNumToday, isSel && styles.wkNumSel]}>{d.getDate()}</Text>
+        {typeEntries.length > 0 ? (
+          <View style={styles.wkDotList}>
+            {typeEntries.slice(0, 4).map(([type], i) => (
+              <View key={type} style={[styles.wkDot, { backgroundColor: TYPE_PALETTE[i % TYPE_PALETTE.length] }]} />
             ))}
-            {typeEntries.length > 3 && (
-              <Text style={[styles.wkExMore, isSel && styles.wkExMoreSel]}>+{typeEntries.length - 3}</Text>
+            {typeEntries.length > 4 && (
+              <Text style={[styles.wkDotMore, isSel && styles.wkDotMoreSel]}>+{typeEntries.length - 4}</Text>
             )}
+          </View>
+        ) : (
+          <View style={styles.wkDotList}>
+            <View style={[styles.wkDot, { backgroundColor: 'transparent' }]} />
           </View>
         )}
       </TouchableOpacity>
@@ -655,8 +653,17 @@ const ExerciseCalendarPage: React.FC<{ embedded?: boolean }> = ({ embedded = fal
             ))}
           </View>
         ) : segment === 'week' ? (
-          <View style={styles.weekStrip}>
-            {weekDays.map((d) => renderWeekCell(d))}
+          <View style={styles.weekCard}>
+            <View style={styles.weekHeader}>
+              {WEEK_LABELS.map((w) => (
+                <Text key={w} style={styles.weekHeaderText}>
+                  {w.replace('周', '')}
+                </Text>
+              ))}
+            </View>
+            <View style={styles.weekStrip}>
+              {weekDays.map((d) => renderWeekCell(d))}
+            </View>
           </View>
         ) : segment === 'month' ? (
           <>
@@ -1037,21 +1044,25 @@ const styles = StyleSheet.create({
   cellExDot: { width: 3, height: 3, borderRadius: 1.5, flexShrink: 0 },
   cellExMore: { fontSize: 7, color: '#fff', lineHeight: 10 },
 
-  weekStrip: { flexDirection: 'row', paddingHorizontal: 6, marginTop: 6, justifyContent: 'space-between' },
-  wkCell: {
-    flex: 1, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 2, borderRadius: 14, marginHorizontal: 4,
-    minHeight: 96, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border,
+  weekCard: {
+    backgroundColor: COLORS.card, marginHorizontal: 14, marginTop: 4, borderRadius: 22,
+    padding: 14, shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 3,
   },
-  wkWeekday: { fontSize: 11, color: COLORS.textLight, marginBottom: 2 },
-  wkWeekdaySel: { color: '#fff' },
-  wkNum: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginVertical: 3 },
-  wkExList: { alignItems: 'center', marginTop: 4, width: '100%' },
-  wkExRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginVertical: 1 },
-  wkExItem: { fontSize: 10, fontWeight: '500', lineHeight: 13, textAlign: 'center', color: '#475569' },
-  wkExItemSel: { color: '#fff' },
-  wkExDot: { width: 5, height: 5, borderRadius: 2.5, flexShrink: 0 },
-  wkExMore: { fontSize: 9, color: COLORS.textLighter, lineHeight: 13, marginTop: 1 },
-  wkExMoreSel: { color: '#fff' },
+  weekStrip: { flexDirection: 'row', marginTop: 8, justifyContent: 'space-between' },
+  wkCell: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, paddingHorizontal: 2,
+    borderRadius: 16, marginHorizontal: 3, minHeight: 88,
+    backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0',
+  },
+  wkCellToday: { borderColor: COLORS.primary, backgroundColor: '#EEF2FF' },
+  wkCellSelected: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
+  wkNum: { fontSize: 18, fontWeight: '700', color: COLORS.text },
+  wkNumToday: { color: COLORS.primary },
+  wkNumSel: { color: '#fff' },
+  wkDotList: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, marginTop: 10, flexWrap: 'wrap', minHeight: 10 },
+  wkDot: { width: 7, height: 7, borderRadius: 3.5 },
+  wkDotMore: { fontSize: 9, color: COLORS.textLight, marginLeft: 2, fontWeight: '600' },
+  wkDotMoreSel: { color: 'rgba(255,255,255,0.85)' },
 
   yearBox: { flexDirection: 'row', paddingHorizontal: 8, marginTop: 4, alignItems: 'flex-end', height: 170 },
   yearCol: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },

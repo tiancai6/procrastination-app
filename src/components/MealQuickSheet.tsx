@@ -649,58 +649,6 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
               </View>
 
               {estMsg ? <Text style={styles.estMsg}>{estMsg}</Text> : null}
-              {showFoodPicker && (
-                <View style={styles.foodBox}>
-                  <View style={styles.foodBoxHead}>
-                    <Text style={styles.foodBoxTitle}>
-                      食物库（点选加入「{foodTarget?.type === 'snack' ? '加餐' : (foodTarget?.type ? MEAL_FIELDS.find((m) => m.key === foodTarget.type)?.label : '')}」）
-                    </Text>
-                    <View style={styles.foodBoxHeadActions}>
-                      <TouchableOpacity
-                        style={styles.foodManageBtn}
-                        onPress={() => navigation.navigate('FoodLibrary')}
-                      >
-                        <Ionicons name="settings-outline" size={14} color={COLORS.primary} />
-                        <Text style={styles.foodManageText}>管理</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => setShowFoodPicker(false)}>
-                        <Ionicons name="close" size={18} color={COLORS.textLight} />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                  {foodLib.length === 0 && <Text style={styles.foodEmpty}>还没有保存的食物，估算后点「存为食物」即可加入</Text>}
-                  {foodLib.map((f) => (
-                    <View key={f.id} style={styles.foodItem}>
-                      <TouchableOpacity style={styles.foodItemMain} onPress={() => appendFood(f)}>
-                        <Text style={styles.foodItemName}>{f.name}</Text>
-                        <Text style={styles.foodItemNut}>蛋{f.protein}g · 热{f.calories}kcal</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => deleteFoodItem(f.id).then(setFoodLib)}>
-                        <Ionicons name="trash-outline" size={15} color={COLORS.textLight} />
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                  <View style={styles.foodAddBox}>
-                    <Text style={styles.foodAddTitle}>新增食物</Text>
-                    <TextInput style={styles.mealInput} placeholder="名称含分量，如：米饭 1碗(约150g)" placeholderTextColor={COLORS.textLighter} value={newFood.name} onChangeText={(v) => setNewFood({ ...newFood, name: v })} />
-                    <View style={styles.foodAddGrid}>
-                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="热量" placeholderTextColor={COLORS.textLighter} value={newFood.calories} onChangeText={(v) => setNewFood({ ...newFood, calories: v })} />
-                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="蛋白" placeholderTextColor={COLORS.textLighter} value={newFood.protein} onChangeText={(v) => setNewFood({ ...newFood, protein: v })} />
-                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="脂肪" placeholderTextColor={COLORS.textLighter} value={newFood.fat} onChangeText={(v) => setNewFood({ ...newFood, fat: v })} />
-                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="碳水" placeholderTextColor={COLORS.textLighter} value={newFood.carbs} onChangeText={(v) => setNewFood({ ...newFood, carbs: v })} />
-                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="纤维" placeholderTextColor={COLORS.textLighter} value={newFood.fiber} onChangeText={(v) => setNewFood({ ...newFood, fiber: v })} />
-                    </View>
-                    <TouchableOpacity style={styles.foodAddBtn} onPress={async () => {
-                      if (!newFood.name.trim()) return;
-                      await addFoodItem({ name: newFood.name.trim(), calories: Number(newFood.calories) || 0, protein: Number(newFood.protein) || 0, fat: Number(newFood.fat) || 0, carbs: Number(newFood.carbs) || 0, fiber: Number(newFood.fiber) || 0 });
-                      setFoodLib(await getFoodLibrary());
-                      setNewFood({ name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '' });
-                    }}>
-                      <Text style={styles.foodAddBtnText}>保存到食物库</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
             </ScrollView>
 
             <View style={styles.actions}>
@@ -734,6 +682,93 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
           }}
           onClose={() => setShowDatePicker(false)}
         />
+
+        {/* 食物库选择弹窗：从底部弹出，避免藏在每日三餐底部被忽略 */}
+        <Modal
+          visible={showFoodPicker}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setShowFoodPicker(false)}
+        >
+          <KeyboardAvoidingView style={styles.foodPickerOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <TouchableWithoutFeedback onPress={() => setShowFoodPicker(false)}>
+              <View style={styles.foodPickerBackdrop} />
+            </TouchableWithoutFeedback>
+            <View style={styles.foodPickerWrap}>
+              <View style={styles.foodPickerSheet}>
+                <View style={styles.grabber} />
+                <View style={styles.foodPickerHead}>
+                  <View>
+                    <Text style={styles.foodPickerTitle}>从食物库选择</Text>
+                    <Text style={styles.foodPickerSubtitle}>
+                      点选加入「{foodTarget?.type === 'snack' ? '加餐' : (foodTarget?.type ? MEAL_FIELDS.find((m) => m.key === foodTarget.type)?.label : '')}」
+                    </Text>
+                  </View>
+                  <View style={styles.foodPickerHeadActions}>
+                    <TouchableOpacity style={styles.foodManageBtn} onPress={() => navigation.navigate('FoodLibrary')}>
+                      <Ionicons name="settings-outline" size={14} color={COLORS.primary} />
+                      <Text style={styles.foodManageText}>管理</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShowFoodPicker(false)}>
+                      <Ionicons name="close" size={22} color={COLORS.textLight} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <ScrollView
+                  style={styles.foodPickerScroll}
+                  contentContainerStyle={styles.foodPickerScrollContent}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {foodLib.length === 0 && (
+                    <Text style={styles.foodEmpty}>还没有保存的食物，估算后点「存为食物」即可加入</Text>
+                  )}
+                  {foodLib.map((f) => (
+                    <View key={f.id} style={styles.foodItem}>
+                      <TouchableOpacity style={styles.foodItemMain} onPress={() => appendFood(f)}>
+                        <Text style={styles.foodItemName}>{f.name}</Text>
+                        <Text style={styles.foodItemNut}>蛋{f.protein}g · 热{f.calories}kcal</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => deleteFoodItem(f.id).then(setFoodLib)}>
+                        <Ionicons name="trash-outline" size={15} color={COLORS.textLight} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+
+                  <View style={styles.foodAddBox}>
+                    <Text style={styles.foodAddTitle}>新增食物</Text>
+                    <TextInput
+                      style={styles.mealInput}
+                      placeholder="名称含分量，如：米饭 1碗(约150g)"
+                      placeholderTextColor={COLORS.textLighter}
+                      value={newFood.name}
+                      onChangeText={(v) => setNewFood({ ...newFood, name: v })}
+                    />
+                    <View style={styles.foodAddGrid}>
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="热量" placeholderTextColor={COLORS.textLighter} value={newFood.calories} onChangeText={(v) => setNewFood({ ...newFood, calories: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="蛋白" placeholderTextColor={COLORS.textLighter} value={newFood.protein} onChangeText={(v) => setNewFood({ ...newFood, protein: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="脂肪" placeholderTextColor={COLORS.textLighter} value={newFood.fat} onChangeText={(v) => setNewFood({ ...newFood, fat: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="碳水" placeholderTextColor={COLORS.textLighter} value={newFood.carbs} onChangeText={(v) => setNewFood({ ...newFood, carbs: v })} />
+                      <TextInput style={styles.foodNum} keyboardType="numeric" placeholder="纤维" placeholderTextColor={COLORS.textLighter} value={newFood.fiber} onChangeText={(v) => setNewFood({ ...newFood, fiber: v })} />
+                    </View>
+                    <TouchableOpacity
+                      style={styles.foodAddBtn}
+                      onPress={async () => {
+                        if (!newFood.name.trim()) return;
+                        await addFoodItem({ name: newFood.name.trim(), calories: Number(newFood.calories) || 0, protein: Number(newFood.protein) || 0, fat: Number(newFood.fat) || 0, carbs: Number(newFood.carbs) || 0, fiber: Number(newFood.fiber) || 0 });
+                        setFoodLib(await getFoodLibrary());
+                        setNewFood({ name: '', calories: '', protein: '', fat: '', carbs: '', fiber: '' });
+                      }}
+                    >
+                      <Text style={styles.foodAddBtnText}>保存到食物库</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -1024,17 +1059,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F0FF', borderWidth: 0.5, borderColor: '#DDD0FB',
   },
   saveFoodBtnText: { color: '#8B5CF6', fontSize: 12, fontWeight: '600' },
-  foodBox: {
-    marginTop: 8, padding: 12, borderRadius: 12, backgroundColor: COLORS.background,
-    borderWidth: 0.5, borderColor: COLORS.border,
+  foodPickerOverlay: { flex: 1, justifyContent: 'flex-end' },
+  foodPickerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  foodPickerWrap: { width: '100%', maxHeight: '88%' },
+  foodPickerSheet: {
+    backgroundColor: COLORS.card, borderTopLeftRadius: 22, borderTopRightRadius: 22,
+    paddingHorizontal: 18, paddingBottom: 28,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.12, shadowRadius: 14, elevation: 12,
   },
-  foodBoxHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  foodBoxTitle: { fontSize: 13.5, fontWeight: '700', color: COLORS.text },
-  foodBoxHeadActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  foodPickerHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, paddingTop: 4 },
+  foodPickerTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  foodPickerSubtitle: { fontSize: 12.5, color: COLORS.textLight, marginTop: 2 },
+  foodPickerHeadActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  foodPickerScroll: { maxHeight: 480 },
+  foodPickerScrollContent: { paddingBottom: 12 },
   foodManageBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   foodManageText: { fontSize: 12.5, color: COLORS.primary, fontWeight: '600' },
   foodEmpty: { fontSize: 12.5, color: COLORS.textLight, marginBottom: 8 },
-  foodItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: COLORS.border },
+  foodItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: COLORS.border },
   foodItemMain: { flex: 1, marginRight: 10 },
   foodItemName: { fontSize: 13.5, color: COLORS.text },
   foodItemNut: { fontSize: 11.5, color: COLORS.textLight, marginTop: 2 },
