@@ -61,6 +61,7 @@ const DATA_CATS: { key: DataCategory; label: string }[] = [
   { key: 'plan', label: '规划打卡' },
   { key: 'focus', label: '专注计时' },
   { key: 'memo', label: '随手记' },
+  { key: 'exercise', label: '运动健身' },
   { key: 'chat', label: '聊天记录' },
 ];
 

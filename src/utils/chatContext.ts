@@ -1,11 +1,12 @@
 // 把用户勾选的个人数据拼成给 AI 的上下文。
-// 支持类别（餐饮/规划打卡/专注计时/随手记/聊天记录）、两档（总结/原始明细）、时间范围（今天/近7天/本月）。
+// 支持类别（餐饮/规划打卡/专注计时/随手记/聊天记录/运动健身）、两档（总结/原始明细）、时间范围（今天/近7天/本月）。
 
-export type DataCategory = 'meal' | 'plan' | 'focus' | 'memo' | 'chat';
+export type DataCategory = 'meal' | 'plan' | 'focus' | 'memo' | 'chat' | 'exercise';
 export type ContextLevel = 'summary' | 'raw';
 export type DateRange = 'today' | '7d' | 'month';
 
 import { getMeals } from './nutrition';
+import { BASE_LEVEL_LABEL } from './activity';
 import {
   getPlans,
   getCheckinRecords,
@@ -14,7 +15,9 @@ import {
   getTimerSessions,
   getQuickMemos,
   getChatMessages,
+  getAllDailyActivity,
 } from './storage';
+import type { ExerciseRecord } from './storage';
 
 const MEAL_LABEL: Record<string, string> = {
   breakfast: '早餐',
@@ -165,6 +168,40 @@ const buildChat = async (level: ContextLevel, start: number): Promise<string> =>
   return `【聊天记录·明细】\n${lines.join('\n')}`;
 };
 
+const buildExercise = async (level: ContextLevel, start: number): Promise<string> => {
+  const all = await getAllDailyActivity();
+  const startStr = toDayStr(new Date(start));
+  const entries = Object.entries(all)
+    .filter(([d]) => d >= startStr)
+    .sort(([a], [b]) => (a < b ? 1 : -1));
+  const rows: { date: string; e: ExerciseRecord }[] = [];
+  for (const [date, act] of entries) {
+    for (const e of act.exercises) rows.push({ date, e });
+  }
+  if (rows.length === 0) return '【运动健身】该时间段无记录';
+  if (level === 'summary') {
+    const totalMin = rows.reduce((s, r) => s + (r.e.durationMin || 0), 0);
+    const totalKcal = rows.reduce((s, r) => s + (r.e.kcal || 0), 0);
+    const byType: Record<string, number> = {};
+    for (const r of rows) byType[r.e.type || '其他'] = (byType[r.e.type || '其他'] || 0) + (r.e.durationMin || 0);
+    const dist = Object.entries(byType).map(([k, v]) => `${k} ${v}分钟`).join('、');
+    return `【运动健身·摘要】${rows.length}次训练, 共${totalMin}分钟${
+      totalKcal ? `, 消耗约${Math.round(totalKcal)}kcal` : ''
+    }；类型：${dist}`;
+  }
+  const lines = rows.slice(-50).map((r) => {
+    const e = r.e;
+    const parts = [r.date, e.type];
+    if (e.durationMin) parts.push(`${e.durationMin}分钟`);
+    if (e.kcal) parts.push(`约${e.kcal}kcal`);
+    if (e.timeOfDay) parts.push(`时段:${e.timeOfDay}`);
+    if (e.plan) parts.push(`计划:${e.plan}`);
+    if (e.note) parts.push(e.note);
+    return `· ${parts.join(' ')}`;
+  });
+  return `【运动健身·明细】\n${lines.join('\n')}`;
+};
+
 export const buildChatContext = async (
   selected: DataCategory[],
   level: ContextLevel,
@@ -180,6 +217,7 @@ export const buildChatContext = async (
   if (selected.includes('focus')) parts.push(await buildFocus(level, start));
   if (selected.includes('memo')) parts.push(await buildMemo(level, start));
   if (selected.includes('chat')) parts.push(await buildChat(level, start));
+  if (selected.includes('exercise')) parts.push(await buildExercise(level, start));
 
   if (parts.length === 0) return '';
   return `以下是用户选择携带的个人数据（${label}${level === 'summary' ? '·总结' : '·原始明细'}），请参考作答：\n\n${parts.join('\n\n')}`;

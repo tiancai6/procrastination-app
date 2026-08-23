@@ -34,6 +34,7 @@ export const ALL_DATA_KEYS = [
   'body_profile_history', // BODY_PROFILE_HISTORY_KEY（身体信息历史快照，趋势折线图用）
   'daily_activity', // DAILY_ACTIVITY_KEY
   'model_configs', // MODEL_CONFIGS_KEY（多模型配置：GLM/豆包/DeepSeek/Gemini）
+  'preferred_meal_model_id', // PREFERRED_MEAL_MODEL_KEY（营养估算首选模型偏好）
   'food_library', // FOOD_LIBRARY_KEY（食物库，nutrition.ts）
   'exercise_types', // EXERCISE_TYPES_KEY（自定义运动类型列表，activity.ts）
 ];
