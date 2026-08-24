@@ -9,12 +9,14 @@ import SettingsPage from './src/pages/SettingsPage';
 import PlanListPage from './src/pages/PlanListPage';
 import QuickMemoPage from './src/pages/QuickMemoPage';
 import ChatPage from './src/pages/ChatPage';
+import ChatSessionsPage from './src/pages/ChatSessionsPage';
 import ExerciseCalendarPage from './src/pages/ExerciseCalendarPage';
 import FoodLibraryPage from './src/pages/FoodLibraryPage';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS } from './src/constants/reasons';
 import { trySelfHeal, checkExportReminder, doManualExport } from './src/utils/autoBackup';
 import { migrateIfNeeded } from './src/utils/modelConfig';
+import { migrateChatSessionsIfNeeded } from './src/utils/storage';
 import { ToastHost } from './src/utils/toast';
 
 const Tab = createBottomTabNavigator();
@@ -35,6 +37,9 @@ export const App: React.FC = () => {
 
       // 1.5 老用户 GLM Key 自动迁移为多模型配置
       await migrateIfNeeded();
+
+      // 1.6 旧版单会话聊天迁移为多会话（chat_messages → chat_sessions）
+      await migrateChatSessionsIfNeeded();
 
       // 2. 检查是否需要提醒导出备份
       const reminder = await checkExportReminder();
@@ -125,7 +130,7 @@ export const App: React.FC = () => {
         />
         <Tab.Screen
           name="chat"
-          component={ChatPage}
+          component={ChatSessionsPage}
           options={{
             title: 'AI对话',
             tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles-outline" color={color} size={size} />,
@@ -144,6 +149,7 @@ export const App: React.FC = () => {
           </Stack.Screen>
           <Stack.Screen name="ExerciseCalendar" component={ExerciseCalendarPage} options={{ headerShown: false }} />
           <Stack.Screen name="FoodLibrary" component={FoodLibraryPage} options={{ headerShown: false }} />
+          <Stack.Screen name="Chat" component={ChatPage} options={{ headerShown: false }} />
         </Stack.Navigator>
       </NavigationContainer>
 

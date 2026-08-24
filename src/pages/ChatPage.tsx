@@ -17,6 +17,7 @@ import {
   Image,
   Switch,
 } from 'react-native';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { copyMediaToMemo } from '../utils/memoMedia';
 import * as ImagePicker from 'expo-image-picker';
@@ -34,22 +35,25 @@ import {
   getVisionImageLimit,
 } from '../utils/chat';
 import {
-  saveChatMessages,
   getChatSummary,
   saveChatSummary,
   getChatMeta,
   saveChatMeta,
-  clearChat,
-  addQuickMemo,
-  generateId,
+  clearChatProfile,
   getModel,
   getVisionModel,
+  getChatSession,
+  deleteChatSession,
+  createChatSession,
+  generateId,
+  setLastSessionId,
 } from '../utils/storage';
 import { onDataReset } from '../utils/appEvents';
 import ProfileModal from '../components/ProfileModal';
 import { useChatStore } from '../store/chatStore';
 import { getModelConfigs, ModelConfig } from '../utils/modelConfig';
 import { buildChatContext, DataCategory, ContextLevel, DateRange } from '../utils/chatContext';
+import { buildChatExport, shareChatFile, saveChatExport } from '../utils/exportChat';
 
 const SYSTEM_CONTEXT_PROMPT = (summary: string) =>
   `你是一位温和、懂专注与时间管理的 AI 助手。以下是用户的长期个人档案（由历史对话压缩而来），请优先参考它来回答，但不要向用户透露"你看到了这份档案"：
@@ -66,24 +70,32 @@ const DATA_CATS: { key: DataCategory; label: string }[] = [
 ];
 
 const ChatPage: React.FC = () => {
-  // 消息列表 / 流式片段 / 运行状态改由全局 chatStore 提供，
-  // 这样 AI 在后台跑、切走页面再回来结果不丢（解决「一切换界面对话就被暂停」）。
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
+  const sessionIdFromRoute: string | undefined = route.params?.id;
+
+  // 消息/流式的全局 store（多会话：只管理当前会话）
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const streamingText = useChatStore((s) => s.streamingText);
   const setMessages = useChatStore((s) => s.setMessages);
   const chatSend = useChatStore((s) => s.send);
-  const chatLoad = useChatStore((s) => s.load);
+  const chatLoad = useChatStore((s) => s.loadSession);
+
+  const [sessionId, setSessionId] = useState<string | undefined>(sessionIdFromRoute);
+  const [sessionTitle, setSessionTitle] = useState<string>(route.params?.title || '新对话');
+
   const [input, setInput] = useState('');
   const loading = isStreaming;
   const [summary, setSummary] = useState('');
-  // 本轮对话携带的个人数据（勾选类别 + 档位 + 时间范围）
+  // 本轮对话携带的个人数据（勾选类别 + 档位 + 时间范围）；默认用会话设置初始化
   const [selCats, setSelCats] = useState<DataCategory[]>([]);
   const [ctxLevel, setCtxLevel] = useState<ContextLevel>('summary');
   const [ctxRange, setCtxRange] = useState<DateRange>('today');
-  // 联网搜索开关（本轮对话强制联网，按品牌走 web_search / Google grounding）
+  const [carryProfile, setCarryProfile] = useState(true);
+  // 联网搜索开关
   const [webSearch, setWebSearch] = useState(false);
-  // 对话可选模型（默认走全局默认模型，可手动切换）
+  // 对话可选模型
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [selModelId, setSelModelId] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -91,28 +103,34 @@ const ChatPage: React.FC = () => {
   const [meta, setMeta] = useState<ChatMeta>({ compressCount: 0, lastCompressedAt: null });
   const [compressLoading, setCompressLoading] = useState(false);
 
-  // 当前使用的文本模型与视觉模型（用于提示发送图片时使用的模型）
   const [model, setModel] = useState('glm-4-flash');
   const [visionModel, setVisionModel] = useState('glm-4v-flash');
-
-  // 待发送的图片（沙盒文件 uri 列表），点发送后清空
   const [pendingImages, setPendingImages] = useState<string[]>([]);
 
-  // 批量删除选择模式（由顶栏「选择」按钮进入）
+  // 批量删除选择模式
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<{ [id: string]: boolean }>({});
-
-  // 复制浮层（在普通 ScrollView 中可选词，支持选任意一段）
   const [copyText, setCopyText] = useState<string | null>(null);
-
-  // 「我的档案」全屏 Modal
   const [profileVisible, setProfileVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [exportVisible, setExportVisible] = useState(false);
 
   const flatRef = useRef<FlatList>(null);
   const loaded = useRef(false);
 
+  // 加载会话设置（携带画像/数据类别默认勾选）
+  const applySessionSettings = useCallback(async (id: string) => {
+    const s = await getChatSession(id);
+    if (s) {
+      setSessionTitle(s.title);
+      setCarryProfile(s.carryProfile);
+      setSelCats(s.carryDataCats);
+      setCtxLevel(s.ctxLevel);
+      setCtxRange(s.ctxRange);
+    }
+  }, []);
+
   const reload = async () => {
-    // 消息列表由全局 chatStore 管理，这里只加载摘要/模型等本地状态，避免覆盖流式片段
     const [sum, m, md, vmd] = await Promise.all([
       getChatSummary(),
       getChatMeta(),
@@ -124,59 +142,26 @@ const ChatPage: React.FC = () => {
     setModel(md || 'glm-4-flash');
     setVisionModel(vmd || 'glm-4v-flash');
     setModels(await getModelConfigs());
-    loaded.current = true;
-  };
-
-  // 从相册多选图片，统一转 JPEG + 缩放后存入沙盒，加入待发送列表。
-  // 一次性最多几张取决于当前视觉模型能力：glm-4v-flash 仅 1 张，glm-4v/glm-4v-plus 等最多 5 张。
-  const pickImage = async () => {
-    try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (perm.status !== 'granted' && perm.accessPrivileges !== 'limited') {
-        Alert.alert('需要相册权限', '请在系统设置中允许访问照片后重试。');
-        return;
-      }
-      const cap = getVisionImageLimit(visionModel);
-      if (pendingImages.length >= cap) {
-        Alert.alert(
-          '已达图片上限',
-          `当前图片模型「${visionModel}」最多支持 ${cap} 张${cap === 1 ? '。如需一次发多张，请在「我的 → AI 智能分析」把图片模型改成 glm-4v 或 glm-4v-plus（最多 5 张）' : ''}。`,
-        );
-        return;
-      }
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'] as any,
-        quality: 1, // 取原图 URI，后续由 manipulator 统一压缩
-        allowsEditing: false,
-        allowsMultipleSelection: true,
-        selectionLimit: cap - pendingImages.length,
-      });
-      if (!res.canceled && res.assets && res.assets.length) {
-        const added: string[] = [];
-        for (const asset of res.assets) {
-          if (!asset.uri) continue;
-          // 统一转 JPEG + 缩放到 1024px 以内（解决 HEIC 导致的 1210 错误）
-          const uri = await processAndSaveImage(asset.uri);
-          added.push(uri);
-        }
-        if (added.length) setPendingImages((prev) => [...prev, ...added].slice(0, cap));
-      }
-    } catch (e: any) {
-      console.error('[Chat] pickImage failed', e);
-      Alert.alert('选择图片失败', e?.message ? String(e.message) : '无法打开相册，请重试');
-    }
-  };
-
-  const removePendingImage = (uri: string) => {
-    setPendingImages((prev) => prev.filter((u) => u !== uri));
   };
 
   useEffect(() => {
-    chatLoad();
-    reload();
+    (async () => {
+      let id = sessionIdFromRoute;
+      if (!id) {
+        const s = await createChatSession();
+        navigation.setParams({ id: s.id, title: s.title });
+        id = s.id;
+      }
+      setSessionId(id);
+      await setLastSessionId(id);
+      await applySessionSettings(id);
+      chatLoad(id);
+      await reload();
+      loaded.current = true;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 清除全部数据 / 导入备份后，重新加载对话
   useEffect(() => {
     const off = onDataReset(reload);
     return off;
@@ -193,12 +178,13 @@ const ChatPage: React.FC = () => {
   const handleSend = async () => {
     const text = input.trim();
     if ((!text && pendingImages.length === 0) || isStreaming || compressLoading) return;
+    const sid = sessionId;
+    if (!sid) return;
     setInput('');
     setPendingImages([]);
     scrollToEnd();
     try {
-      const summaryCtx = summary ? SYSTEM_CONTEXT_PROMPT(summary) : undefined;
-      // 拼接用户本轮勾选携带的个人数据作为上下文
+      const summaryCtx = carryProfile && summary ? SYSTEM_CONTEXT_PROMPT(summary) : undefined;
       let dataCtx: string | undefined;
       if (selCats.length > 0) {
         dataCtx = await buildChatContext(selCats, ctxLevel, ctxRange);
@@ -206,15 +192,51 @@ const ChatPage: React.FC = () => {
       const finalCtx = [summaryCtx, dataCtx && dataCtx.trim() ? dataCtx : undefined]
         .filter(Boolean)
         .join('\n\n');
-      // 发消息交给全局 chatStore（AI 在后台流式跑），切走页面再切回结果不丢
-      await chatSend(text, pendingImages, finalCtx || undefined, webSearch, selCfg);
+      await chatSend(sid, text, pendingImages, finalCtx || undefined, webSearch, selCfg);
     } catch (e: any) {
       Alert.alert('发送失败', e?.message ? String(e.message) : '请检查网络或 API Key');
     }
   };
 
+  const startImagePick = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted' && perm.accessPrivileges !== 'limited') {
+        Alert.alert('需要相册权限', '请在系统设置中允许访问照片后重试。');
+        return;
+      }
+      const cap = getVisionImageLimit(visionModel);
+      if (pendingImages.length >= cap) {
+        Alert.alert(
+          '已达图片上限',
+          `当前图片模型「${visionModel}」最多支持 ${cap} 张${cap === 1 ? '。如需一次发多张，请在「我的 → AI 智能分析」把图片模型改成 glm-4v 或 glm-4v-plus（最多 5 张）' : ''}。`,
+        );
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'] as any,
+        quality: 1,
+        allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: cap - pendingImages.length,
+      });
+      if (!res.canceled && res.assets && res.assets.length) {
+        const added: string[] = [];
+        for (const asset of res.assets) {
+          if (!asset.uri) continue;
+          const uri = await processAndSaveImage(asset.uri);
+          added.push(uri);
+        }
+        if (added.length) setPendingImages((prev) => [...prev, ...added].slice(0, cap));
+      }
+    } catch (e: any) {
+      console.error('[Chat] pickImage failed', e);
+      Alert.alert('选择图片失败', e?.message ? String(e.message) : '无法打开相册，请重试');
+    }
+  };
+
   const handleCompress = async () => {
-    if (loading || compressLoading) return;
+    if (!sessionId || loading || compressLoading) return;
     if (messages.length <= COMPRESS_KEEP_RECENT) {
       Alert.alert('暂不需要压缩', `当前对话只有 ${messages.length} 条，还不到压缩阈值。`);
       return;
@@ -228,8 +250,8 @@ const ChatPage: React.FC = () => {
       setSummary(newMd);
       setMeta(newMeta);
       setMessages(recent);
-      await Promise.all([saveChatSummary(newMd), saveChatMeta(newMeta), saveChatMessages(recent)]);
-      Alert.alert('已压缩', '旧对话已压成摘要，下次对话会参考这份摘要。可在后续版本查看与编辑它。');
+      await Promise.all([saveChatSummary(newMd), saveChatMeta(newMeta), useChatStore.getState().saveMessages(recent)]);
+      Alert.alert('已压缩', '旧对话已压成摘要，下次对话会参考这份摘要。');
     } catch (e: any) {
       Alert.alert('压缩失败', e?.message ? String(e.message) : '请稍后重试');
     } finally {
@@ -237,15 +259,12 @@ const ChatPage: React.FC = () => {
     }
   };
 
-  // 把某条对话存成一条「随手记」
   const handleSaveToMemo = async (item: ChatMessage) => {
     if (!item.content && (!item.images || item.images.length === 0)) {
       Alert.alert('无法保存', '这条消息没有文字也没有图片');
       return;
     }
     const memoId = generateId();
-    // 随手记的 media.file 必须是「文件名」（memoMedia 按 memos/<id>/文件名 拼路径），
-    // 所以要把聊天图片复制到 memos/<memoId>/ 目录并返回文件名，不能直接存绝对路径，否则图片显示裂开。
     const media: { type: 'image'; file: string }[] = [];
     for (const uri of item.images || []) {
       try {
@@ -266,6 +285,7 @@ const ChatPage: React.FC = () => {
       tags: ['AI对话'],
     };
     try {
+      const { addQuickMemo } = await import('../utils/storage');
       await addQuickMemo(memo);
       Alert.alert('已存到随手记', '可在「随手记」标签页查看这条记录');
     } catch (e: any) {
@@ -273,24 +293,85 @@ const ChatPage: React.FC = () => {
     }
   };
 
-  const handleClear = () => {
-    if (messages.length === 0 && !summary) return;
-    Alert.alert('清空对话', '将删除全部聊天记录与摘要，确定吗？', [
+  // —— 删除三动作（区分）——
+  const handleClearCurrent = () => {
+    if (!sessionId) return;
+    Alert.alert('清空当前对话', '将删除这个会话里的全部聊天消息，但个人画像与其他会话不受影响。', [
       { text: '取消', style: 'cancel' },
       {
         text: '清空',
         style: 'destructive',
         onPress: async () => {
-          await clearChat();
+          await useChatStore.getState().clearSession(sessionId);
           setMessages([]);
-          setSummary('');
-          setMeta({ compressCount: 0, lastCompressedAt: null });
         },
       },
     ]);
   };
 
-  // —— 批量删除选择逻辑 ——
+  const handleDeleteProfile = () => {
+    Alert.alert(
+      '删除个人画像',
+      '将删除由历史对话压缩而成的长期个人档案（"个人 Skill"）。所有会话的「携带画像」都会失效，且不可恢复。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            await clearChatProfile();
+            setSummary('');
+            Alert.alert('已删除', '长期个人画像已清空。');
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteSession = () => {
+    if (!sessionId) return;
+    Alert.alert('删除此会话', `将移除「${sessionTitle}」整个对话（含全部消息）。其他会话不受影响。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteChatSession(sessionId);
+          navigation.goBack();
+        },
+      },
+    ]);
+  };
+
+  // —— 导出选择 ——
+  const doExport = async (format: 'md' | 'txt', saveOnly: boolean) => {
+    const ids = Object.keys(selectedIds).filter((k) => selectedIds[k]);
+    const chosen = ids.length ? messages.filter((m) => ids.includes(m.id)) : messages;
+    if (chosen.length === 0) {
+      Alert.alert('没有内容', '请先选择要导出的消息');
+      return;
+    }
+    const content = buildChatExport(chosen, sessionTitle, format);
+    setExportVisible(false);
+    try {
+      if (saveOnly) {
+        await saveChatExport(content, sessionTitle, format, chosen.length);
+        Alert.alert('已保存', '对话稿已存到「AI 对话 → 右上角书签」里的「已保存的对话稿」');
+      } else {
+        await shareChatFile(content, sessionTitle, format);
+      }
+    } catch (e: any) {
+      // 分享不可用时改存到我的保存
+      try {
+        await saveChatExport(content, sessionTitle, format, chosen.length);
+        Alert.alert('已存到我的保存', '当前环境不支持系统分享，已改为存到「已保存的对话稿」');
+      } catch {
+        Alert.alert('导出失败', e?.message ? String(e.message) : '请稍后重试');
+      }
+    }
+  };
+
+  // —— 批量删除选择 ——
   const enterSelecting = useCallback(() => {
     setIsSelecting(true);
     setSelectedIds({});
@@ -319,7 +400,7 @@ const ChatPage: React.FC = () => {
           setMessages(next);
           setIsSelecting(false);
           setSelectedIds({});
-          await saveChatMessages(next);
+          await useChatStore.getState().saveMessages(next);
         },
       },
     ]);
@@ -353,18 +434,28 @@ const ChatPage: React.FC = () => {
               <Text style={styles.cancelText}>取消</Text>
             </TouchableOpacity>
             <Text style={styles.selTitle}>已选 {selectedCount} 条</Text>
-            <TouchableOpacity
-              style={[styles.delSelBtn, selectedCount === 0 && styles.delSelDisabled]}
-              onPress={deleteSelected}
-              disabled={selectedCount === 0}
-            >
-              <Ionicons name="trash" size={18} color={selectedCount === 0 ? COLORS.textLighter : '#fff'} />
-              <Text style={[styles.delSelText, selectedCount === 0 && styles.delSelTextDisabled]}>删除</Text>
-            </TouchableOpacity>
+            <View style={styles.selActions}>
+              <TouchableOpacity style={styles.selExportBtn} onPress={() => setExportVisible(true)}>
+                <Ionicons name="share-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.selExportText}>导出</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.delSelBtn, selectedCount === 0 && styles.delSelDisabled]}
+                onPress={deleteSelected}
+                disabled={selectedCount === 0}
+              >
+                <Ionicons name="trash" size={18} color={selectedCount === 0 ? COLORS.textLighter : '#fff'} />
+              </TouchableOpacity>
+            </View>
           </View>
         ) : (
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>AI 对话</Text>
+            <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerTitleWrap} onPress={() => navigation.goBack()}>
+              <Text style={styles.headerTitle} numberOfLines={1}>{sessionTitle}</Text>
+            </TouchableOpacity>
             <View style={styles.headerActions}>
               <TouchableOpacity style={styles.iconBtn} onPress={enterSelecting}>
                 <Ionicons name="checkbox-outline" size={20} color={COLORS.textLight} />
@@ -378,21 +469,13 @@ const ChatPage: React.FC = () => {
               <TouchableOpacity style={styles.iconBtn} onPress={() => setProfileVisible(true)}>
                 <Ionicons name="book-outline" size={20} color={COLORS.textLight} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.iconBtn} onPress={handleCompress} disabled={compressLoading}>
-                {compressLoading ? (
-                  <ActivityIndicator size="small" color={COLORS.primary} />
-                ) : (
-                  <Ionicons name="layers-outline" size={20} color={COLORS.primary} />
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.iconBtn} onPress={handleClear}>
-                <Ionicons name="trash-outline" size={20} color={COLORS.textLight} />
+              <TouchableOpacity style={styles.iconBtn} onPress={() => setMenuVisible(true)}>
+                <Ionicons name="ellipsis-vertical" size={20} color={COLORS.textLight} />
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* 超阈值提醒横幅（仅提醒，不自动压缩） */}
         {overBudget && !isSelecting && (
           <View style={styles.hintBar}>
             <Ionicons name="alert-circle-outline" size={16} color={COLORS.warning} />
@@ -403,11 +486,10 @@ const ChatPage: React.FC = () => {
           </View>
         )}
 
-        {/* 批量模式提示 */}
         {isSelecting && (
           <View style={styles.selectTipBar}>
             <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
-            <Text style={styles.selectTipText}>点击消息可多选，选中后点右上角「删除」</Text>
+            <Text style={styles.selectTipText}>点击消息可多选，选中后可「导出」或「删除」</Text>
           </View>
         )}
 
@@ -500,6 +582,17 @@ const ChatPage: React.FC = () => {
               })}
             </View>
             <View style={styles.searchRow}>
+              <Ionicons name="person-outline" size={14} color={COLORS.textLight} />
+              <Text style={styles.searchLabel}>携带个人画像（长期记忆）</Text>
+              <Switch
+                value={carryProfile}
+                onValueChange={setCarryProfile}
+                trackColor={{ false: COLORS.border, true: COLORS.primary }}
+                thumbColor="#fff"
+                style={styles.searchSwitch}
+              />
+            </View>
+            <View style={styles.searchRow}>
               <Ionicons name="globe-outline" size={14} color={COLORS.textLight} />
               <Text style={styles.searchLabel}>联网搜索（实时联网，查最新信息）</Text>
               <Switch
@@ -545,13 +638,12 @@ const ChatPage: React.FC = () => {
 
         {!isSelecting && (
           <View style={styles.inputBar}>
-            {/* 待发送图片预览 */}
             {pendingImages.length > 0 && (
               <View style={styles.pendingImages}>
                 {pendingImages.map((uri) => (
                   <View key={uri} style={styles.pendingImgWrap}>
                     <Image source={{ uri }} style={styles.pendingImg} resizeMode="cover" />
-                    <TouchableOpacity style={styles.pendingImgRemove} onPress={() => removePendingImage(uri)}>
+                    <TouchableOpacity style={styles.pendingImgRemove} onPress={() => setPendingImages((prev) => prev.filter((u) => u !== uri))}>
                       <Ionicons name="close" size={12} color="#fff" />
                     </TouchableOpacity>
                   </View>
@@ -559,7 +651,7 @@ const ChatPage: React.FC = () => {
               </View>
             )}
             <View style={styles.inputRow}>
-              <TouchableOpacity style={styles.imgPickBtn} onPress={pickImage} disabled={loading}>
+              <TouchableOpacity style={styles.imgPickBtn} onPress={startImagePick} disabled={loading}>
                 <Ionicons name="image-outline" size={22} color={COLORS.primary} />
               </TouchableOpacity>
               <TextInput
@@ -582,7 +674,6 @@ const ChatPage: React.FC = () => {
                 )}
               </TouchableOpacity>
             </View>
-            {/* 图片将由视觉模型识别的提示 */}
             {pendingImages.length > 0 && (
               <Text style={styles.visionHint}>
                 含图片，将使用视觉模型 {visionModel} 识别（最多 {getVisionImageLimit(visionModel)} 张）
@@ -592,18 +683,9 @@ const ChatPage: React.FC = () => {
         )}
       </KeyboardAvoidingView>
 
-      {/* 复制浮层：用 Modal 隔离，避免父级手势拦截；用 TextInput editable={false} 支持原生选词菜单 */}
-      <Modal
-        visible={copyText !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCopyText(null)}
-      >
-        <TouchableOpacity
-          style={styles.copyOverlay}
-          activeOpacity={1}
-          onPress={() => setCopyText(null)}
-        >
+      {/* 复制浮层 */}
+      <Modal visible={copyText !== null} transparent animationType="fade" onRequestClose={() => setCopyText(null)}>
+        <TouchableOpacity style={styles.copyOverlay} activeOpacity={1} onPress={() => setCopyText(null)}>
           <View style={styles.copyCard} onStartShouldSetResponder={() => true}>
             <View style={styles.copyCardHeader}>
               <Text style={styles.copyCardTitle}>复制内容</Text>
@@ -611,26 +693,83 @@ const ChatPage: React.FC = () => {
                 <Ionicons name="close" size={20} color={COLORS.textLight} />
               </TouchableOpacity>
             </View>
-            <TextInput
-              style={styles.copyTextInput}
-              value={copyText || ''}
-              editable={false}
-              multiline
-              selectTextOnFocus
-              textAlignVertical="top"
-            />
-            <TouchableOpacity
-              style={styles.copyAllBtn}
-              onPress={() => {
-                if (copyText) Clipboard.setString(copyText);
-              }}
-            >
+            <TextInput style={styles.copyTextInput} value={copyText || ''} editable={false} multiline selectTextOnFocus textAlignVertical="top" />
+            <TouchableOpacity style={styles.copyAllBtn} onPress={() => { if (copyText) Clipboard.setString(copyText); }}>
               <Ionicons name="copy-outline" size={16} color="#fff" />
               <Text style={styles.copyAllText}>复制全部</Text>
             </TouchableOpacity>
             <Text style={styles.copyHint}>长按上方文字可选择任意一段，再点系统「复制」；或点上面「复制全部」</Text>
             <TouchableOpacity style={styles.copyDoneBtn} onPress={() => setCopyText(null)}>
               <Text style={styles.copyDoneText}>完成</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ⋯ 菜单：删除区分 + 压缩 + 档案 */}
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity style={styles.copyOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={styles.menuCard} onStartShouldSetResponder={() => true}>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); handleCompress(); }}>
+              <Ionicons name="layers-outline" size={20} color={COLORS.primary} />
+              <Text style={styles.menuItemText}>压缩旧对话为摘要</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); setProfileVisible(true); }}>
+              <Ionicons name="book-outline" size={20} color={COLORS.textLight} />
+              <Text style={styles.menuItemText}>查看 / 编辑个人画像</Text>
+            </TouchableOpacity>
+            <View style={styles.menuDivider} />
+            <Text style={styles.menuGroupLabel}>删除</Text>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); handleClearCurrent(); }}>
+              <Ionicons name="trash-outline" size={20} color={COLORS.textLight} />
+              <View style={styles.menuItemBody}>
+                <Text style={styles.menuItemText}>清空当前对话</Text>
+                <Text style={styles.menuItemSub}>仅删除本会话消息，不影响画像与其他会话</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.menuItem, styles.menuItemDanger]} onPress={() => { setMenuVisible(false); handleDeleteProfile(); }}>
+              <Ionicons name="person-remove-outline" size={20} color="#E5484D" />
+              <View style={styles.menuItemBody}>
+                <Text style={[styles.menuItemText, styles.menuItemTextDanger]}>删除个人画像</Text>
+                <Text style={styles.menuItemSub}>清空长期记忆，所有会话的「携带画像」失效</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.menuItem, styles.menuItemDanger]} onPress={() => { setMenuVisible(false); handleDeleteSession(); }}>
+              <Ionicons name="close-circle-outline" size={20} color="#E5484D" />
+              <View style={styles.menuItemBody}>
+                <Text style={[styles.menuItemText, styles.menuItemTextDanger]}>删除此会话</Text>
+                <Text style={styles.menuItemSub}>移除整个对话（含全部消息），其他会话不受影响</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 导出面板 */}
+      <Modal visible={exportVisible} transparent animationType="fade" onRequestClose={() => setExportVisible(false)}>
+        <TouchableOpacity style={styles.copyOverlay} activeOpacity={1} onPress={() => setExportVisible(false)}>
+          <View style={styles.menuCard} onStartShouldSetResponder={() => true}>
+            <Text style={styles.menuGroupLabel}>导出当前选择（{selectedCount || messages.length} 条）</Text>
+            <TouchableOpacity style={styles.menuItem} onPress={() => doExport('md', false)}>
+              <Ionicons name="logo-markdown" size={20} color={COLORS.primary} />
+              <View style={styles.menuItemBody}>
+                <Text style={styles.menuItemText}>分享为 Markdown（.md）</Text>
+                <Text style={styles.menuItemSub}>带角色与时间，适合存档/再编辑</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={() => doExport('txt', false)}>
+              <Ionicons name="document-text-outline" size={20} color={COLORS.primary} />
+              <View style={styles.menuItemBody}>
+                <Text style={styles.menuItemText}>分享为带时间文本（.txt）</Text>
+                <Text style={styles.menuItemSub}>每行 [时间] 角色：内容</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={() => doExport('md', true)}>
+              <Ionicons name="bookmark-outline" size={20} color={COLORS.textLight} />
+              <View style={styles.menuItemBody}>
+                <Text style={styles.menuItemText}>存到我的保存</Text>
+                <Text style={styles.menuItemSub}>存进 App 内「已保存的对话稿」，可随时回看</Text>
+              </View>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -650,7 +789,7 @@ const ChatPage: React.FC = () => {
   );
 };
 
-// 单条消息气泡（抽取为 memo 组件，缓解 FlatList 的 VirtualizedList 性能警告）
+// 单条消息气泡
 const ChatRow = memo(
   ({
     item,
@@ -678,9 +817,7 @@ const ChatRow = memo(
         </View>
       ) : null;
     const textBlock = item.content ? (
-      <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>
-        {item.content}
-      </Text>
+      <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>{item.content}</Text>
     ) : null;
     const timeBlock = (
       <Text style={[styles.timeText, isUser && styles.timeTextUser]}>
@@ -692,21 +829,13 @@ const ChatRow = memo(
       return (
         <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
           <TouchableOpacity style={styles.checkBox} onPress={() => onToggleSelect(item.id)}>
-            <Ionicons
-              name={selected ? 'checkbox' : 'square-outline'}
-              size={20}
-              color={selected ? COLORS.primary : COLORS.textLight}
-            />
+            <Ionicons name={selected ? 'checkbox' : 'square-outline'} size={20} color={selected ? COLORS.primary : COLORS.textLight} />
           </TouchableOpacity>
           <TouchableOpacity
             activeOpacity={0.7}
             onPress={() => onToggleSelect(item.id)}
             onLongPress={() => onToggleSelect(item.id)}
-            style={[
-              styles.bubble,
-              isUser ? styles.bubbleUser : styles.bubbleBot,
-              selected && styles.bubbleSelected,
-            ]}
+            style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleBot, selected && styles.bubbleSelected]}
           >
             {imagesBlock}
             {textBlock}
@@ -717,33 +846,19 @@ const ChatRow = memo(
     }
 
     const copyBtn = (
-      <TouchableOpacity
-        style={styles.copyBtn}
-        onPress={() => onCopy(item.content)}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
+      <TouchableOpacity style={styles.copyBtn} onPress={() => onCopy(item.content)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
         <Ionicons name="copy-outline" size={16} color={COLORS.textLight} />
       </TouchableOpacity>
     );
-
     const memoBtn = (
-      <TouchableOpacity
-        style={styles.memoBtn}
-        onPress={() => onSaveToMemo(item)}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
+      <TouchableOpacity style={styles.memoBtn} onPress={() => onSaveToMemo(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
         <Ionicons name="bookmark-outline" size={16} color={COLORS.textLight} />
       </TouchableOpacity>
     );
 
     return (
       <View style={[styles.row, isUser ? styles.rowUser : styles.rowBot]}>
-        {isUser ? (
-          <View style={styles.rowActions}>
-            {copyBtn}
-            {memoBtn}
-          </View>
-        ) : null}
+        {isUser ? <View style={styles.rowActions}><View>{copyBtn}</View><View style={{ marginTop: 4 }}>{memoBtn}</View></View> : null}
         <TouchableWithoutFeedback onLongPress={() => onCopy(item.content)}>
           <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleBot]}>
             {imagesBlock}
@@ -751,12 +866,7 @@ const ChatRow = memo(
             {timeBlock}
           </View>
         </TouchableWithoutFeedback>
-        {!isUser ? (
-          <View style={styles.rowActions}>
-            {copyBtn}
-            {memoBtn}
-          </View>
-        ) : null}
+        {!isUser ? <View style={styles.rowActions}><View>{copyBtn}</View><View style={{ marginTop: 4 }}>{memoBtn}</View></View> : null}
       </View>
     );
   },
@@ -765,84 +875,47 @@ const ChatRow = memo(
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: TOP_INSET + 14,
-    paddingBottom: 10,
-    paddingHorizontal: 16,
-    backgroundColor: COLORS.card,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingTop: TOP_INSET + 14, paddingBottom: 10, paddingHorizontal: 8,
+    backgroundColor: COLORS.card, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  backBtn: { padding: 4, width: 32 },
+  headerTitleWrap: { flex: 1, marginLeft: 2 },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   headerActions: { flexDirection: 'row', alignItems: 'center' },
   iconBtn: { padding: 6, marginLeft: 6 },
   summaryBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.secondary,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    marginRight: 4,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.secondary,
+    borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 4,
   },
   summaryBadgeText: { fontSize: 11, color: COLORS.primary, marginLeft: 3, fontWeight: '600' },
-  // 选择模式顶栏
   headerSelect: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: TOP_INSET + 14,
-    paddingBottom: 10,
-    paddingHorizontal: 16,
-    backgroundColor: COLORS.primary,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.primary,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingTop: TOP_INSET + 14, paddingBottom: 10, paddingHorizontal: 16,
+    backgroundColor: COLORS.primary, borderBottomWidth: 1, borderBottomColor: COLORS.primary,
   },
+  selActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   cancelBtn: { paddingVertical: 4, paddingRight: 6 },
   cancelText: { fontSize: 15, color: '#fff', fontWeight: '500' },
   selTitle: { fontSize: 15, color: '#fff', fontWeight: '600' },
+  selExportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },
+  selExportText: { fontSize: 14, color: '#fff', fontWeight: '600' },
   delSelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E5484D',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    gap: 4,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#E5484D',
+    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 5, gap: 4,
   },
   delSelDisabled: { backgroundColor: 'rgba(255,255,255,0.35)' },
-  delSelText: { fontSize: 14, color: '#fff', fontWeight: '600' },
-  delSelTextDisabled: { color: 'rgba(255,255,255,0.8)' },
-  // 选择提示条
   selectTipBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.secondary,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.secondary,
+    paddingHorizontal: 14, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
   selectTipText: { flex: 1, fontSize: 12, color: COLORS.primary, marginLeft: 6 },
   hintBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF6E7',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FBE7BF',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF6E7',
+    paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#FBE7BF',
   },
   hintText: { flex: 1, fontSize: 12.5, color: '#92670C', marginLeft: 6 },
-  hintBtn: {
-    backgroundColor: COLORS.warning,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginLeft: 8,
-  },
+  hintBtn: { backgroundColor: COLORS.warning, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4, marginLeft: 8 },
   hintBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '600' },
   listContent: { padding: 14, paddingBottom: 20, flexGrow: 1 },
   row: { flexDirection: 'row', marginBottom: 10, alignItems: 'flex-start' },
@@ -853,10 +926,8 @@ const styles = StyleSheet.create({
   bubbleBot: { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderBottomLeftRadius: 4 },
   bubbleSelected: { borderWidth: 2, borderColor: COLORS.primary },
   bubbleText: { fontSize: 14, lineHeight: 20 },
-  // 气泡内图片
   bubbleImages: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
   bubbleImage: { width: 120, height: 120, borderRadius: 10, backgroundColor: COLORS.background },
-  // 待发送图片
   pendingImages: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, paddingBottom: 8 },
   pendingImgWrap: { position: 'relative', width: 64, height: 64 },
   pendingImg: { width: 64, height: 64, borderRadius: 10, backgroundColor: COLORS.background },
@@ -866,21 +937,14 @@ const styles = StyleSheet.create({
   },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end' },
   imgPickBtn: {
-    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-    marginRight: 6,
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginRight: 6,
   },
   visionHint: { fontSize: 11.5, color: COLORS.primary, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
   bubbleTextUser: { color: '#fff' },
   bubbleTextBot: { color: COLORS.text },
-  timeText: {
-    fontSize: 10,
-    color: COLORS.textLighter,
-    marginTop: 4,
-    textAlign: 'right',
-  },
+  timeText: { fontSize: 10, color: COLORS.textLighter, marginTop: 4, textAlign: 'right' },
   timeTextUser: { color: 'rgba(255,255,255,0.75)' },
-  // 复制按钮 / 选择框
-  rowActions: { flexDirection: 'row', alignItems: 'center' },
+  rowActions: { flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
   copyBtn: { paddingHorizontal: 8, paddingVertical: 10 },
   memoBtn: { paddingHorizontal: 8, paddingVertical: 10 },
   checkBox: { paddingHorizontal: 6, paddingVertical: 10 },
@@ -888,133 +952,58 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 15, color: COLORS.textLight, marginTop: 12 },
   emptySub: { fontSize: 12, color: COLORS.textLighter, marginTop: 6 },
   inputBar: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: COLORS.card,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    paddingHorizontal: 12, paddingVertical: 8,
+    backgroundColor: COLORS.card, borderTopWidth: 1, borderTopColor: COLORS.border,
   },
   input: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: COLORS.text,
-    maxHeight: 96,
+    flex: 1, backgroundColor: COLORS.background, borderRadius: 18,
+    paddingHorizontal: 14, paddingVertical: 9, fontSize: 14, color: COLORS.text, maxHeight: 96,
   },
   sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 8,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primary,
+    alignItems: 'center', justifyContent: 'center', marginLeft: 8,
   },
   sendBtnDisabled: { backgroundColor: COLORS.textLighter },
-  // 复制浮层
   copyOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-    zIndex: 1000,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 20, zIndex: 1000,
   },
   copyCard: {
-    width: '100%',
-    maxHeight: '80%',
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 6,
+    width: '100%', maxHeight: '80%', backgroundColor: COLORS.card, borderRadius: 16, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 12, elevation: 6,
   },
-  copyCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
+  copyCardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   copyCardTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   copyTextInput: {
-    maxHeight: 320,
-    fontSize: 15,
-    lineHeight: 22,
-    color: COLORS.text,
-    padding: 12,
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    marginVertical: 12,
-    textAlignVertical: 'top',
+    maxHeight: 320, fontSize: 15, lineHeight: 22, color: COLORS.text, padding: 12,
+    backgroundColor: COLORS.background, borderRadius: 8, marginVertical: 12, textAlignVertical: 'top',
   },
   copyAllBtn: {
-    marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: COLORS.textLight,
-    borderRadius: 12,
-    paddingVertical: 9,
+    marginTop: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: COLORS.textLight, borderRadius: 12, paddingVertical: 9,
   },
   copyAllText: { fontSize: 14, color: '#fff', fontWeight: '600' },
   copyHint: { fontSize: 12, color: COLORS.textLighter, marginTop: 10, textAlign: 'center' },
   copyDoneBtn: {
-    marginTop: 12,
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
+    marginTop: 12, backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 10, alignItems: 'center',
   },
   copyDoneText: { fontSize: 15, color: '#fff', fontWeight: '600' },
-  // 数据携带选择器
   dataBar: {
-    backgroundColor: COLORS.card,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 8,
+    backgroundColor: COLORS.card, borderTopWidth: 1, borderTopColor: COLORS.border,
+    paddingHorizontal: 12, paddingTop: 8, paddingBottom: 8,
   },
   modelPickRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: '#EEF2FF',
-    borderWidth: 0.5,
-    borderColor: '#C7D2FE',
-    marginBottom: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 10, backgroundColor: '#EEF2FF', borderWidth: 0.5, borderColor: '#C7D2FE', marginBottom: 8,
   },
   modelPickText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
   modelPickBox: {
-    marginBottom: 8,
-    padding: 10,
-    borderRadius: 12,
-    backgroundColor: COLORS.background,
-    borderWidth: 0.5,
-    borderColor: COLORS.border,
+    marginBottom: 8, padding: 10, borderRadius: 12, backgroundColor: COLORS.background,
+    borderWidth: 0.5, borderColor: COLORS.border,
   },
   modelPickItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    marginBottom: 6,
-    backgroundColor: COLORS.card,
-    borderWidth: 0.5,
-    borderColor: COLORS.border,
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 6,
+    backgroundColor: COLORS.card, borderWidth: 0.5, borderColor: COLORS.border,
   },
   modelPickItemActive: { backgroundColor: '#EDE9FE', borderColor: COLORS.primary },
   modelPickItemText: { fontSize: 13.5, color: COLORS.text },
@@ -1022,31 +1011,37 @@ const styles = StyleSheet.create({
   dataBarTitle: { flex: 1, fontSize: 12.5, color: COLORS.textLight, marginLeft: 6, fontWeight: '600' },
   dataClear: { fontSize: 12, color: COLORS.primary, fontWeight: '600' },
   dataChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  searchRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 6 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 6 },
   searchLabel: { flex: 1, fontSize: 12.5, color: COLORS.textLight },
   searchSwitch: { transform: [{ scale: 0.8 }] },
   dataChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: COLORS.background,
-    borderWidth: 0.5,
-    borderColor: COLORS.border,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14,
+    backgroundColor: COLORS.background, borderWidth: 0.5, borderColor: COLORS.border,
   },
   dataChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   dataChipText: { fontSize: 13, color: COLORS.text },
   dataChipTextActive: { color: '#fff', fontWeight: '600' },
-  dataSubRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    gap: 8,
-  },
+  dataSubRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 8 },
   segGroup: { flexDirection: 'row', backgroundColor: COLORS.background, borderRadius: 10, padding: 2, gap: 2 },
   segBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   segBtnActive: { backgroundColor: COLORS.primary },
   segText: { fontSize: 12, color: COLORS.textLight },
   segTextActive: { color: '#fff', fontWeight: '600' },
+  // ⋯ 菜单 & 导出面板
+  menuCard: {
+    width: '100%', backgroundColor: COLORS.card, borderRadius: 16, padding: 8, paddingTop: 6,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 12, elevation: 6,
+  },
+  menuGroupLabel: { fontSize: 11.5, color: COLORS.textLighter, fontWeight: '600', paddingHorizontal: 12, paddingVertical: 6 },
+  menuItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10,
+  },
+  menuItemDanger: { backgroundColor: 'rgba(229,72,77,0.06)' },
+  menuItemBody: { flex: 1 },
+  menuItemText: { fontSize: 14.5, color: COLORS.text, fontWeight: '500' },
+  menuItemTextDanger: { color: '#E5484D' },
+  menuItemSub: { fontSize: 11.5, color: COLORS.textLighter, marginTop: 2 },
+  menuDivider: { height: 1, backgroundColor: COLORS.border, marginVertical: 4 },
 });
 
 export default ChatPage;

@@ -4,6 +4,7 @@ import { TimerSession, FocusStats, TaskPlan, Plan, CheckinRecord, RewardRecord, 
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from './ledger';
 import type { AIInsightResult, MemoAnalysisResult } from './ai';
 import type { ChatMessage, ChatMeta } from './chat';
+import type { DataCategory, ContextLevel, DateRange } from './chatContext';
 import { autoBackup } from './autoBackup';
 import { emitDataReset } from './appEvents';
 import { ALL_DATA_KEYS } from './keys';
@@ -715,6 +716,179 @@ export const clearChat = async (): Promise<void> => {
     autoBackup();
   } catch (error) {
     console.error('Failed to clear chat:', error);
+  }
+};
+
+// ============ 多会话（Chat Sessions）存储 ============
+// 注意：个人长期画像（chat_summary / chat_meta）是「全局唯一」的，不随会话隔离；
+// 每个会话只记录「是否携带画像」「携带哪些个人数据类别」，开始新对话时由用户勾选。
+
+export interface ChatSession {
+  id: string;
+  title: string; // 用户命名，或自动取首条消息前若干字
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+  carryProfile: boolean; // 是否携带长期个人画像（默认 true）
+  carryDataCats: DataCategory[]; // 携带哪些个人数据类别（空=不携带）
+  ctxLevel: ContextLevel;
+  ctxRange: DateRange;
+}
+
+const CHAT_SESSIONS_KEY = 'chat_sessions';
+const LAST_SESSION_KEY = 'chat_last_session';
+
+const deriveTitle = (msgs: ChatMessage[]): string => {
+  const first = msgs.find((m) => m.role === 'user' && m.content?.trim());
+  const base = first?.content?.trim() || '新对话';
+  return base.slice(0, 20) + (base.length > 20 ? '…' : '');
+};
+
+export const getChatSessions = async (): Promise<ChatSession[]> => {
+  try {
+    const data = await AsyncStorage.getItem(CHAT_SESSIONS_KEY);
+    const list: ChatSession[] = data ? JSON.parse(data) : [];
+    return list.sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch (error) {
+    console.error('Failed to get chat sessions:', error);
+    return [];
+  }
+};
+
+export const saveChatSessions = async (list: ChatSession[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify(list));
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to save chat sessions:', error);
+  }
+};
+
+export const getChatSession = async (id: string): Promise<ChatSession | null> => {
+  const list = await getChatSessions();
+  return list.find((s) => s.id === id) || null;
+};
+
+export const upsertChatSession = async (session: ChatSession): Promise<void> => {
+  const list = await getChatSessions();
+  const idx = list.findIndex((s) => s.id === session.id);
+  if (idx >= 0) list[idx] = session;
+  else list.unshift(session);
+  list.sort((a, b) => b.updatedAt - a.updatedAt);
+  await saveChatSessions(list);
+};
+
+export const deleteChatSession = async (id: string): Promise<void> => {
+  const list = (await getChatSessions()).filter((s) => s.id !== id);
+  await saveChatSessions(list);
+  const last = await AsyncStorage.getItem(LAST_SESSION_KEY);
+  if (last === id) await AsyncStorage.removeItem(LAST_SESSION_KEY);
+};
+
+export const renameChatSession = async (id: string, title: string): Promise<void> => {
+  const s = await getChatSession(id);
+  if (!s) return;
+  s.title = title.trim() || s.title;
+  s.updatedAt = Date.now();
+  await upsertChatSession(s);
+};
+
+export const setLastSessionId = async (id: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(LAST_SESSION_KEY, id);
+  } catch (error) {
+    console.error('Failed to set last session:', error);
+  }
+};
+
+export const getLastSessionId = async (): Promise<string | null> => {
+  try {
+    return (await AsyncStorage.getItem(LAST_SESSION_KEY)) || null;
+  } catch {
+    return null;
+  }
+};
+
+// 新建会话（默认携带画像、不携带个人数据；这些可由用户在新建面板覆盖）
+export const createChatSession = async (opts?: {
+  title?: string;
+  carryProfile?: boolean;
+  carryDataCats?: DataCategory[];
+  ctxLevel?: ContextLevel;
+  ctxRange?: DateRange;
+}): Promise<ChatSession> => {
+  const now = Date.now();
+  const session: ChatSession = {
+    id: generateId(),
+    title: opts?.title?.trim() || '新对话',
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+    carryProfile: opts?.carryProfile ?? true,
+    carryDataCats: opts?.carryDataCats ?? [],
+    ctxLevel: opts?.ctxLevel ?? 'summary',
+    ctxRange: opts?.ctxRange ?? 'today',
+  };
+  await upsertChatSession(session);
+  await setLastSessionId(session.id);
+  return session;
+};
+
+// 仅替换某会话的消息（批量删除、压缩等本地操作）
+export const saveSessionMessages = async (id: string, messages: ChatMessage[]): Promise<void> => {
+  const s = await getChatSession(id);
+  if (!s) return;
+  s.messages = messages;
+  s.updatedAt = Date.now();
+  if (!s.title || s.title === '新对话') {
+    const t = deriveTitle(messages);
+    if (t && t !== '新对话') s.title = t;
+  }
+  await upsertChatSession(s);
+};
+
+// 清空某会话的消息（保留会话本身与设置）
+export const clearSessionMessages = async (id: string): Promise<void> => {
+  const s = await getChatSession(id);
+  if (!s) return;
+  s.messages = [];
+  s.updatedAt = Date.now();
+  await upsertChatSession(s);
+};
+
+// 删除全局长期个人画像（影响所有会话的「携带画像」）
+export const clearChatProfile = async (): Promise<void> => {
+  try {
+    await AsyncStorage.multiRemove([CHAT_SUMMARY_KEY, CHAT_META_KEY]);
+    autoBackup();
+  } catch (error) {
+    console.error('Failed to clear chat profile:', error);
+  }
+};
+
+// 首次启动迁移：旧版单会话 chat_messages 包装成第一个会话
+export const migrateChatSessionsIfNeeded = async (): Promise<void> => {
+  try {
+    const existing = await AsyncStorage.getItem(CHAT_SESSIONS_KEY);
+    if (existing) return; // 已迁移过
+    const old = await getChatMessages();
+    if (old.length === 0) return; // 无旧数据，保持空列表
+    const now = Date.now();
+    const session: ChatSession = {
+      id: generateId(),
+      title: deriveTitle(old),
+      messages: old,
+      createdAt: now,
+      updatedAt: now,
+      carryProfile: true,
+      carryDataCats: [],
+      ctxLevel: 'summary',
+      ctxRange: 'today',
+    };
+    await saveChatSessions([session]);
+    await setLastSessionId(session.id);
+  } catch (error) {
+    console.error('Failed to migrate chat sessions:', error);
   }
 };
 
