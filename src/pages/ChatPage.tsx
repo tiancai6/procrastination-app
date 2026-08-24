@@ -99,6 +99,7 @@ const ChatPage: React.FC = () => {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [selModelId, setSelModelId] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [toolPanelExpanded, setToolPanelExpanded] = useState(false);
   const selCfg: ModelConfig | undefined = selModelId ? models.find((m) => m.id === selModelId) || undefined : undefined;
   const [meta, setMeta] = useState<ChatMeta>({ compressCount: 0, lastCompressedAt: null });
   const [compressLoading, setCompressLoading] = useState(false);
@@ -527,16 +528,34 @@ const ChatPage: React.FC = () => {
           }
         />
 
-        {/* 输入栏 */}
+        {/* 输入栏（可折叠：默认收起，只留模型选择 + 展开按钮） */}
         {!isSelecting && (
           <View style={styles.dataBar}>
-            <TouchableOpacity style={styles.modelPickRow} onPress={() => setShowModelPicker((v) => !v)}>
-              <Ionicons name="swap-horizontal-outline" size={14} color={COLORS.primary} />
-              <Text style={styles.modelPickText}>
-                对话模型：{selCfg ? selCfg.name : '默认（' + (models.find((m) => m.isDefault)?.name || '未配置') + '）'}
-              </Text>
-              <Ionicons name="chevron-down" size={14} color={COLORS.textLight} />
-            </TouchableOpacity>
+            <View style={styles.modelPickRow}>
+              <TouchableOpacity
+                style={styles.modelPickMain}
+                onPress={() => {
+                  if (!toolPanelExpanded) setToolPanelExpanded(true);
+                  setShowModelPicker((v) => !v);
+                }}
+              >
+                <Ionicons name="swap-horizontal-outline" size={14} color={COLORS.primary} />
+                <Text style={styles.modelPickText} numberOfLines={1}>
+                  {selCfg ? selCfg.name : '默认（' + (models.find((m) => m.isDefault)?.name || '未配置') + '）'}
+                </Text>
+                <Ionicons name={showModelPicker ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textLight} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.toolExpandBtn}
+                onPress={() => {
+                  setToolPanelExpanded((v) => !v);
+                  setShowModelPicker(false);
+                }}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Ionicons name={toolPanelExpanded ? 'chevron-down' : 'chevron-up'} size={18} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
             {showModelPicker && (
               <View style={styles.modelPickBox}>
                 <TouchableOpacity
@@ -558,80 +577,84 @@ const ChatPage: React.FC = () => {
                 ))}
               </View>
             )}
-            <View style={styles.dataBarHead}>
-              <Ionicons name="folder-open-outline" size={14} color={COLORS.textLight} />
-              <Text style={styles.dataBarTitle}>携带数据（AI 可参考）</Text>
-              {selCats.length > 0 && (
-                <TouchableOpacity onPress={() => setSelCats([])} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-                  <Text style={styles.dataClear}>清空</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <View style={styles.dataChips}>
-              {DATA_CATS.map((c) => {
-                const on = selCats.includes(c.key);
-                return (
-                  <TouchableOpacity
-                    key={c.key}
-                    style={[styles.dataChip, on && styles.dataChipActive]}
-                    onPress={() => setSelCats((prev) => (on ? prev.filter((x) => x !== c.key) : [...prev, c.key]))}
-                  >
-                    <Text style={[styles.dataChipText, on && styles.dataChipTextActive]}>{c.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <View style={styles.searchRow}>
-              <Ionicons name="person-outline" size={14} color={COLORS.textLight} />
-              <Text style={styles.searchLabel}>携带个人画像（长期记忆）</Text>
-              <Switch
-                value={carryProfile}
-                onValueChange={setCarryProfile}
-                trackColor={{ false: COLORS.border, true: COLORS.primary }}
-                thumbColor="#fff"
-                style={styles.searchSwitch}
-              />
-            </View>
-            <View style={styles.searchRow}>
-              <Ionicons name="globe-outline" size={14} color={COLORS.textLight} />
-              <Text style={styles.searchLabel}>联网搜索（实时联网，查最新信息）</Text>
-              <Switch
-                value={webSearch}
-                onValueChange={setWebSearch}
-                trackColor={{ false: COLORS.border, true: COLORS.primary }}
-                thumbColor="#fff"
-                style={styles.searchSwitch}
-              />
-            </View>
-            {selCats.length > 0 && (
-              <View style={styles.dataSubRow}>
-                <View style={styles.segGroup}>
-                  {(['summary', 'raw'] as ContextLevel[]).map((lv) => (
-                    <TouchableOpacity
-                      key={lv}
-                      style={[styles.segBtn, ctxLevel === lv && styles.segBtnActive]}
-                      onPress={() => setCtxLevel(lv)}
-                    >
-                      <Text style={[styles.segText, ctxLevel === lv && styles.segTextActive]}>
-                        {lv === 'summary' ? '总结' : '原始明细'}
-                      </Text>
+            {toolPanelExpanded && (
+              <>
+                <View style={styles.dataBarHead}>
+                  <Ionicons name="folder-open-outline" size={14} color={COLORS.textLight} />
+                  <Text style={styles.dataBarTitle}>携带数据（AI 可参考）</Text>
+                  {selCats.length > 0 && (
+                    <TouchableOpacity onPress={() => setSelCats([])} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                      <Text style={styles.dataClear}>清空</Text>
                     </TouchableOpacity>
-                  ))}
+                  )}
                 </View>
-                <View style={styles.segGroup}>
-                  {(['today', '7d', 'month'] as DateRange[]).map((rg) => (
-                    <TouchableOpacity
-                      key={rg}
-                      style={[styles.segBtn, ctxRange === rg && styles.segBtnActive]}
-                      onPress={() => setCtxRange(rg)}
-                    >
-                      <Text style={[styles.segText, ctxRange === rg && styles.segTextActive]}>
-                        {rg === 'today' ? '今天' : rg === '7d' ? '近7天' : '本月'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
+                <View style={styles.dataChips}>
+                  {DATA_CATS.map((c) => {
+                    const on = selCats.includes(c.key);
+                    return (
+                      <TouchableOpacity
+                        key={c.key}
+                        style={[styles.dataChip, on && styles.dataChipActive]}
+                        onPress={() => setSelCats((prev) => (on ? prev.filter((x) => x !== c.key) : [...prev, c.key]))}
+                      >
+                        <Text style={[styles.dataChipText, on && styles.dataChipTextActive]}>{c.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
-              </View>
+                <View style={styles.searchRow}>
+                  <Ionicons name="person-outline" size={14} color={COLORS.textLight} />
+                  <Text style={styles.searchLabel}>携带个人画像（长期记忆）</Text>
+                  <Switch
+                    value={carryProfile}
+                    onValueChange={setCarryProfile}
+                    trackColor={{ false: COLORS.border, true: COLORS.primary }}
+                    thumbColor="#fff"
+                    style={styles.searchSwitch}
+                  />
+                </View>
+                <View style={styles.searchRow}>
+                  <Ionicons name="globe-outline" size={14} color={COLORS.textLight} />
+                  <Text style={styles.searchLabel}>联网搜索（实时联网，查最新信息）</Text>
+                  <Switch
+                    value={webSearch}
+                    onValueChange={setWebSearch}
+                    trackColor={{ false: COLORS.border, true: COLORS.primary }}
+                    thumbColor="#fff"
+                    style={styles.searchSwitch}
+                  />
+                </View>
+                {selCats.length > 0 && (
+                  <View style={styles.dataSubRow}>
+                    <View style={styles.segGroup}>
+                      {(['summary', 'raw'] as ContextLevel[]).map((lv) => (
+                        <TouchableOpacity
+                          key={lv}
+                          style={[styles.segBtn, ctxLevel === lv && styles.segBtnActive]}
+                          onPress={() => setCtxLevel(lv)}
+                        >
+                          <Text style={[styles.segText, ctxLevel === lv && styles.segTextActive]}>
+                            {lv === 'summary' ? '总结' : '原始明细'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <View style={styles.segGroup}>
+                      {(['today', '7d', 'month'] as DateRange[]).map((rg) => (
+                        <TouchableOpacity
+                          key={rg}
+                          style={[styles.segBtn, ctxRange === rg && styles.segBtnActive]}
+                          onPress={() => setCtxRange(rg)}
+                        >
+                          <Text style={[styles.segText, ctxRange === rg && styles.segTextActive]}>
+                            {rg === 'today' ? '今天' : rg === '7d' ? '近7天' : '本月'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                )}
+              </>
             )}
           </View>
         )}
@@ -993,10 +1016,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingTop: 8, paddingBottom: 8,
   },
   modelPickRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 6, paddingVertical: 6,
     borderRadius: 10, backgroundColor: '#EEF2FF', borderWidth: 0.5, borderColor: '#C7D2FE', marginBottom: 8,
   },
-  modelPickText: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  modelPickMain: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, paddingHorizontal: 6 },
+  modelPickText: { flex: 1, fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  toolExpandBtn: { padding: 6, marginLeft: 2 },
   modelPickBox: {
     marginBottom: 8, padding: 10, borderRadius: 12, backgroundColor: COLORS.background,
     borderWidth: 0.5, borderColor: COLORS.border,
