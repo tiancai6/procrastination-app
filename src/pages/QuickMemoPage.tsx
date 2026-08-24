@@ -13,12 +13,13 @@ import {
   Alert,
   Image,
   BackHandler,
-  Share,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { Video, ResizeMode } from 'expo-av';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import { generateId, getQuickMemos, addQuickMemo, updateQuickMemo, deleteQuickMemo, getCachedMemoAnalysis } from '../utils/storage';
@@ -383,21 +384,37 @@ const QuickMemoPage: React.FC = () => {
   };
 
   // 分享某条随手记到微信（通过系统分享面板，需本机已安装微信）。
-  // 文字 + 图片一起发：iOS 系统分享面板原生支持「文字 + 单张图」；多图时先发文字+首图，
-  // 其余图片可再次点分享逐张发送（RN 原生分享单次只带一张图）。
+  // iOS 微信对 RN Share.share 的纯文字/混合内容报「不支持的分享类型」，必须改用 expo-sharing 分享文件：
+  // - 有图片时分享第一张图片（微信不接受文字+图片混合，文字会丢失，可多图分次分享）。
+  // - 无图片时把文字写成 .txt 文件再分享，微信会把它当作可查看的文本文件发送。
   const shareMemo = async (memo: QuickMemo) => {
     const text = (memo.content || '').trim();
     const images = memo.media.filter((m) => m.type === 'image').map((m) => getMemoMediaUri(memo.id, m.file));
     try {
-      if (images.length === 0) {
-        await Share.share({ message: text || '随手记', title: '随手记' });
+      if (images.length > 0) {
+        const fileUri = images[0];
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: '分享随手记图片',
+          UTI: 'public.image',
+        });
       } else {
-        // iOS：message 作为正文、url 作为附件，微信会一并带上
-        await Share.share({ message: text, url: images[0], title: '随手记' });
+        const fileName = `随手记-${Date.now()}.txt`;
+        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, text || '随手记', { encoding: FileSystem.EncodingType.UTF8 });
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/plain',
+          dialogTitle: '分享随手记',
+          UTI: 'public.text',
+        });
       }
     } catch (e: any) {
-      // 用户取消分享（iOS: User did not share / Android: E_MAIL）属正常，不提示
-      const canceled = e?.message === 'User did not share' || e?.name === 'E_MAIL' || e?.code === 'E_MAIL';
+      // 用户取消分享属正常，不提示
+      const canceled =
+        e?.message?.includes('cancel') ||
+        e?.message?.includes('取消') ||
+        e?.message === 'User did not share' ||
+        e?.code === 'ERR_USER_CANCELED';
       if (!canceled) {
         console.error('[QuickMemo] share failed', e);
         Alert.alert('分享失败', '请确认已安装微信，或通过系统分享面板选择微信后再试');
