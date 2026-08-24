@@ -128,17 +128,23 @@ const ChatSessionsPage: React.FC = () => {
   // —— AI 主动问候 ——
   const [greeting, setGreeting] = useState<GreetingResult | null>(null);
   const [greetingRemain, setGreetingRemain] = useState(0);
+  const [greetingLoading, setGreetingLoading] = useState(false);
   const greetingRef = useRef<GreetingResult | null>(null);
 
   // 评估是否弹卡：开关/免打扰/次数/未结束话题/纯闲聊 全部满足才弹；正在展示时不再重复评估
   const checkGreeting = useCallback(async () => {
     if (greetingRef.current) return;
-    const result = await evaluateGreeting();
-    if (result) {
-      greetingRef.current = result;
-      setGreeting(result);
-      await markGreetingShown(); // 弹卡即消耗一次（并设 30 分钟冷却）
-      setGreetingRemain(await remainingToday());
+    setGreetingLoading(true);
+    try {
+      const result = await evaluateGreeting();
+      if (result) {
+        greetingRef.current = result;
+        setGreeting(result);
+        await markGreetingShown(); // 弹卡即消耗一次（并设 30 分钟冷却）
+        setGreetingRemain(await remainingToday());
+      }
+    } finally {
+      setGreetingLoading(false);
     }
   }, []);
 
@@ -191,6 +197,19 @@ const ChatSessionsPage: React.FC = () => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* AI 主动问候卡：加载中 */}
+      {greetingLoading && !greeting && (
+        <View style={styles.greetingCard}>
+          <View style={styles.greetingTop}>
+            <View style={styles.greetingAvatar}>
+              <Ionicons name="sparkles" size={16} color="#fff" />
+            </View>
+            <Text style={styles.greetingTitle}>AI 主动问候</Text>
+          </View>
+          <Text style={styles.greetingText}>正在想一个话题…</Text>
+        </View>
+      )}
 
       {/* AI 主动问候卡 */}
       {greeting && (

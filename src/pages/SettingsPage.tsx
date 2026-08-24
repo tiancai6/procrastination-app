@@ -256,6 +256,13 @@ const SettingsPage: React.FC = () => {
         {proactive.enabled && (
           <View style={styles.proactiveBody}>
             <View style={styles.proactiveRow}>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={styles.proactiveLabel}>智能判断话题</Text>
+                <Text style={[styles.menuDescription, { marginTop: 2 }]}>让 AI 翻看你的画像与近期聊天，自行决定延续话题或抛个你感兴趣的话题（需已配置 AI 模型）</Text>
+              </View>
+              <Switch value={proactive.smartGreeting} onValueChange={(v) => updateProactive({ smartGreeting: v })} />
+            </View>
+            <View style={styles.proactiveRow}>
               <Text style={styles.proactiveLabel}>每日最多主动次数</Text>
               <View style={styles.seg}>
                 {[1, 2, 3].map((n) => (

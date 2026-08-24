@@ -3,7 +3,8 @@
 //   +（有未结束话题 或 设置允许纯闲聊）。
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getChatSessions, upsertChatSession, toDateStr } from './storage';
+import { getChatSessions, upsertChatSession, toDateStr, getChatSummary } from './storage';
+import { callModel } from '../utils/model';
 
 export type ProactiveContentMode = 'unfinished' | 'both';
 
@@ -13,6 +14,7 @@ export interface ProactiveSettings {
   quietStartHour: number; // 免打扰起始（含），0-23
   quietEndHour: number; // 免打扰结束（不含），0-23
   contentMode: ProactiveContentMode;
+  smartGreeting: boolean; // 让 AI 自行判断延续话题/自拟感兴趣话题（默认开）
 }
 
 export interface ProactiveState {
@@ -37,6 +39,7 @@ export const DEFAULT_PROACTIVE_SETTINGS: ProactiveSettings = {
   quietStartHour: 0,
   quietEndHour: 6,
   contentMode: 'both',
+  smartGreeting: true,
 };
 
 export const getProactiveSettings = async (): Promise<ProactiveSettings> => {
@@ -124,6 +127,86 @@ export interface GreetingResult {
   isCasual: boolean;
 }
 
+// —— 智能问候：让 AI 判断能否延续历史话题，或自拟用户可能感兴趣的话题 ——
+
+interface RecentSessionBrief {
+  id: string;
+  title: string;
+  msgs: string[];
+}
+
+const gatherContext = async (): Promise<{ summary: string; recent: RecentSessionBrief[] }> => {
+  const summary = (await getChatSummary()).trim();
+  const sessions = (await getChatSessions()).slice(0, 3); // 最近 3 个会话
+  const recent: RecentSessionBrief[] = sessions.map((s) => ({
+    id: s.id,
+    title: s.title,
+    msgs: s.messages.slice(-6).map((m) => {
+      const who = m.role === 'user' ? '我' : 'AI';
+      const text = (m.content || '').replace(/\n/g, ' ').slice(0, 120);
+      return `${who}：${text}`;
+    }),
+  }));
+  return { summary, recent };
+};
+
+const SMART_SYSTEM_PROMPT = `你是 App 的「主动问候」助手。用户没有明确要求你找他，但 App 会在合适的时候主动开启一段对话。
+你的任务：先读【个人画像】和【近期聊天】，判断是否能自然延续某个话题——不要求用户说过"下次再聊"这类话，只要话题明显还能接（例如他问了什么还没得到回应、抛出一个还没展开的想法、或上次聊到一半）就视为可延续，并填对应的会话 id；若没有明显可延续的话题，就自拟一个用户可能感兴趣的开场。
+开场可以是：观点探讨、冷知识、生活/效率建议；如果你有联网或实时搜索能力，也可以引用近期新闻或时事动态，并自然带出一句看法或提问。
+输出要求：一句温暖、自然、像朋友随口开口的中文问候（1-3 句），引导用户接话。不要油腻、不要过度热情、不要使用"亲"等称呼。
+只输出一个 JSON 对象，不要任何额外文字、不要代码块标记：
+{"mode":"continue"|"new","sessionId":"<若能延续填会话id，否则空字符串>","text":"<问候语>"}`;
+
+// 从模型返回里尽量解析出 JSON；解析失败则把整段文本当闲聊文案
+const parseSmartResult = (raw: string): { mode: 'continue' | 'new'; sessionId?: string; text: string } | null => {
+  let s = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start === -1 || end === -1) return null;
+  try {
+    const obj = JSON.parse(s.slice(start, end + 1));
+    const text = typeof obj.text === 'string' ? obj.text.trim() : '';
+    if (!text) return null;
+    const mode: 'continue' | 'new' = obj.mode === 'continue' ? 'continue' : 'new';
+    const sessionId = typeof obj.sessionId === 'string' && obj.sessionId ? obj.sessionId : undefined;
+    return { mode, sessionId, text };
+  } catch {
+    return null;
+  }
+};
+
+// 生成智能问候；无模型 / 网络失败 / 解析失败 → 返回 null（交由上层退回本地逻辑）
+export const generateSmartGreeting = async (): Promise<GreetingResult | null> => {
+  try {
+    const { summary, recent } = await gatherContext();
+    const recentText = recent.length
+      ? recent.map((r) => `会话「${r.title}」（id: ${r.id}）\n${r.msgs.join('\n')}`).join('\n\n')
+      : '（暂无近期聊天）';
+    const userContent = `【个人画像】\n${summary || '（暂无）'}\n\n【近期聊天】\n${recentText}\n\n请判断并只输出 JSON。`;
+    const text = await callModel(
+      [
+        { role: 'system', content: SMART_SYSTEM_PROMPT },
+        { role: 'user', content: userContent },
+      ],
+      false,
+      { feature: '主动问候', maxTokens: 300 },
+    );
+    const parsed = parseSmartResult(text);
+    if (!parsed) {
+      const t = text.trim().slice(0, 200);
+      return t ? { text: t, isCasual: true } : null;
+    }
+    return {
+      text: parsed.text,
+      sessionId: parsed.mode === 'continue' ? parsed.sessionId : undefined,
+      isCasual: parsed.mode !== 'continue',
+    };
+  } catch (e) {
+    console.warn('[proactive] generateSmartGreeting 失败，退回本地逻辑', e);
+    return null;
+  }
+};
+
 // 评估是否应该弹出问候卡；返回 null 表示不弹。
 export const evaluateGreeting = async (): Promise<GreetingResult | null> => {
   const settings = await getProactiveSettings();
@@ -136,6 +219,13 @@ export const evaluateGreeting = async (): Promise<GreetingResult | null> => {
   if (state.dismissedToday) return null;
   if (now.getTime() < state.snoozeUntil) return null;
 
+  // 智能判断：让 AI 决定延续话题还是自拟话题（失败退回本地）
+  if (settings.smartGreeting) {
+    const smart = await generateSmartGreeting();
+    if (smart) return smart;
+  }
+
+  // 本地兜底逻辑
   const unfinished = await detectUnfinishedTopic();
   if (unfinished) {
     return {
