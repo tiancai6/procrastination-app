@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,13 @@ import {
   TextInput,
   Switch,
   Alert,
+  AppState,
   Modal,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants/reasons';
 import { TOP_INSET } from '../constants/safeArea';
 import SwipeableRow from '../components/SwipeableRow';
@@ -26,6 +27,15 @@ import {
 } from '../utils/storage';
 import { getSavedChats, deleteSavedChat, SavedChat } from '../utils/savedChat';
 import type { DataCategory } from '../utils/chatContext';
+import {
+  evaluateGreeting,
+  markGreetingShown,
+  snoozeGreeting,
+  dismissGreetingToday,
+  remainingToday,
+  createCasualGreetingSession,
+  GreetingResult,
+} from '../utils/proactive';
 
 const DATA_CATS: { key: DataCategory; label: string }[] = [
   { key: 'meal', label: '餐饮' },
@@ -115,6 +125,58 @@ const ChatSessionsPage: React.FC = () => {
     refresh();
   };
 
+  // —— AI 主动问候 ——
+  const [greeting, setGreeting] = useState<GreetingResult | null>(null);
+  const [greetingRemain, setGreetingRemain] = useState(0);
+  const greetingRef = useRef<GreetingResult | null>(null);
+
+  // 评估是否弹卡：开关/免打扰/次数/未结束话题/纯闲聊 全部满足才弹；正在展示时不再重复评估
+  const checkGreeting = useCallback(async () => {
+    if (greetingRef.current) return;
+    const result = await evaluateGreeting();
+    if (result) {
+      greetingRef.current = result;
+      setGreeting(result);
+      await markGreetingShown(); // 弹卡即消耗一次（并设 30 分钟冷却）
+      setGreetingRemain(await remainingToday());
+    }
+  }, []);
+
+  // 切回「AI 对话」tab 时检查
+  useFocusEffect(
+    useCallback(() => { checkGreeting(); }, [checkGreeting])
+  );
+
+  // App 从后台回到前台时也检查
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') checkGreeting();
+    });
+    return () => sub.remove();
+  }, [checkGreeting]);
+
+  const handleGreetingChat = async () => {
+    if (!greeting) return;
+    let id = greeting.sessionId;
+    // 未结束话题 → 打开原会话；纯闲聊 → 新建一个会话并把问候语作为 AI 首条消息
+    if (!id) id = await createCasualGreetingSession(greeting.text);
+    greetingRef.current = null;
+    setGreeting(null);
+    navigation.navigate('Chat', { id, title: greeting.isCasual ? 'AI 主动问候' : undefined });
+  };
+
+  const handleGreetingLater = async () => {
+    await snoozeGreeting(); // 收起，本次冷却 3 小时
+    greetingRef.current = null;
+    setGreeting(null);
+  };
+
+  const handleGreetingMute = async () => {
+    await dismissGreetingToday(); // 今天之内不再弹
+    greetingRef.current = null;
+    setGreeting(null);
+  };
+
   return (
     <View style={styles.container}>
       {/* 顶部栏 */}
@@ -129,6 +191,35 @@ const ChatSessionsPage: React.FC = () => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* AI 主动问候卡 */}
+      {greeting && (
+        <View style={styles.greetingCard}>
+          <View style={styles.greetingTop}>
+            <View style={styles.greetingAvatar}>
+              <Ionicons name="sparkles" size={16} color="#fff" />
+            </View>
+            <Text style={styles.greetingTitle}>AI 主动问候</Text>
+            <View style={styles.greetingRemainWrap}>
+              <Text style={styles.greetingRemain}>今日剩 {greetingRemain} 次</Text>
+            </View>
+          </View>
+          <Text style={styles.greetingText}>{greeting.text}</Text>
+          <View style={styles.greetingActions}>
+            <TouchableOpacity style={styles.greetingChat} onPress={handleGreetingChat}>
+              <Text style={styles.greetingChatText}>聊两句</Text>
+            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', marginLeft: 'auto', gap: 10 }}>
+              <TouchableOpacity style={styles.greetingLater} onPress={handleGreetingLater}>
+                <Text style={styles.greetingLaterText}>等下再说</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.greetingMute} onPress={handleGreetingMute}>
+                <Text style={styles.greetingMuteText}>不打扰</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
 
       <FlatList
         data={sessions}
@@ -332,6 +423,21 @@ const styles = StyleSheet.create({
   savedTitle: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   savedMeta: { fontSize: 11.5, color: COLORS.textLighter, marginTop: 3 },
   savedDel: { padding: 8, marginLeft: 8 },
+  // AI 主动问候卡
+  greetingCard: { backgroundColor: COLORS.primary, borderRadius: 16, padding: 14, margin: 12, marginBottom: 4, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+  greetingTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  greetingAvatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.28)', alignItems: 'center', justifyContent: 'center', marginRight: 8 },
+  greetingTitle: { flex: 1, fontSize: 14, fontWeight: '700', color: '#fff' },
+  greetingRemainWrap: { backgroundColor: 'rgba(255,255,255,0.22)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
+  greetingRemain: { fontSize: 11, color: '#fff', fontWeight: '600' },
+  greetingText: { fontSize: 15, color: '#fff', lineHeight: 22, marginBottom: 12 },
+  greetingActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  greetingChat: { backgroundColor: '#fff', borderRadius: 12, paddingVertical: 8, paddingHorizontal: 18 },
+  greetingChatText: { color: COLORS.primary, fontSize: 14, fontWeight: '700' },
+  greetingLater: { paddingVertical: 8, paddingHorizontal: 4 },
+  greetingLaterText: { color: 'rgba(255,255,255,0.92)', fontSize: 13 },
+  greetingMute: { paddingVertical: 8, paddingHorizontal: 4 },
+  greetingMuteText: { color: 'rgba(255,255,255,0.92)', fontSize: 13 },
 });
 
 export default ChatSessionsPage;

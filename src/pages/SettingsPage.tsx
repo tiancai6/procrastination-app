@@ -11,6 +11,22 @@ import { doManualExport } from '../utils/autoBackup';
 import ModelConfigPage from './ModelConfigPage';
 import AiUsagePage from './AiUsagePage';
 import { getModelConfigs } from '../utils/modelConfig';
+import { getProactiveSettings, saveProactiveSettings, DEFAULT_PROACTIVE_SETTINGS, ProactiveSettings } from '../utils/proactive';
+
+const HourStepper: React.FC<{ label: string; value: number; onChange: (v: number) => void }> = ({ label, value, onChange }) => (
+  <View style={styles.hourStepperRow}>
+    <Text style={styles.hourStepperLabel}>{label}</Text>
+    <View style={styles.hourStepperCtl}>
+      <TouchableOpacity style={styles.hourStepBtn} onPress={() => onChange((value + 23) % 24)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+        <Ionicons name="remove" size={16} color={COLORS.primary} />
+      </TouchableOpacity>
+      <Text style={styles.hourStepVal}>{String(value).padStart(2, '0')}:00</Text>
+      <TouchableOpacity style={styles.hourStepBtn} onPress={() => onChange((value + 1) % 24)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+        <Ionicons name="add" size={16} color={COLORS.primary} />
+      </TouchableOpacity>
+    </View>
+  </View>
+);
 
 const SettingsPage: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState(false);
@@ -27,6 +43,7 @@ const SettingsPage: React.FC = () => {
   const [showModelCfg, setShowModelCfg] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [modelCount, setModelCount] = useState(0);
+  const [proactive, setProactive] = useState<ProactiveSettings>(DEFAULT_PROACTIVE_SETTINGS);
 
   useEffect(() => {
     loadProfile();
@@ -38,6 +55,13 @@ const SettingsPage: React.FC = () => {
       setAvatarImage(image);
     }
     setModelCount((await getModelConfigs()).length);
+    setProactive(await getProactiveSettings());
+  };
+
+  const updateProactive = async (patch: Partial<ProactiveSettings>) => {
+    const next = { ...proactive, ...patch };
+    setProactive(next);
+    await saveProactiveSettings(next);
   };
 
   const refreshModelCount = async () => setModelCount((await getModelConfigs()).length);
@@ -219,6 +243,51 @@ const SettingsPage: React.FC = () => {
         </View>
         <Text style={styles.menuArrow}>›</Text>
       </TouchableOpacity>
+
+      {/* AI 主动问候设置 */}
+      <View style={styles.proactiveCard}>
+        <View style={styles.proactiveHeader}>
+          <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.primary} />
+          <Text style={styles.proactiveTitle}>AI 主动问候</Text>
+          <Switch value={proactive.enabled} onValueChange={(v) => updateProactive({ enabled: v })} />
+        </View>
+        <Text style={styles.proactiveDesc}>App 会在你活跃时主动找你聊天（追问未结束的话题或纯闲聊），凌晨 00:00–06:00 静默，每天最多 3 次。</Text>
+
+        {proactive.enabled && (
+          <View style={styles.proactiveBody}>
+            <View style={styles.proactiveRow}>
+              <Text style={styles.proactiveLabel}>每日最多主动次数</Text>
+              <View style={styles.seg}>
+                {[1, 2, 3].map((n) => (
+                  <TouchableOpacity key={n} style={[styles.segBtn, proactive.maxPerDay === n && styles.segBtnActive]} onPress={() => updateProactive({ maxPerDay: n })}>
+                    <Text style={[styles.segText, proactive.maxPerDay === n && styles.segTextActive]}>{n}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.proactiveRow}>
+              <Text style={styles.proactiveLabel}>问候内容</Text>
+              <View style={styles.seg}>
+                <TouchableOpacity style={[styles.segBtn, proactive.contentMode === 'unfinished' && styles.segBtnActive]} onPress={() => updateProactive({ contentMode: 'unfinished' })}>
+                  <Text style={[styles.segText, proactive.contentMode === 'unfinished' && styles.segTextActive]}>只追问未结束</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.segBtn, proactive.contentMode === 'both' && styles.segBtnActive]} onPress={() => updateProactive({ contentMode: 'both' })}>
+                  <Text style={[styles.segText, proactive.contentMode === 'both' && styles.segTextActive]}>也可以闲聊</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.proactiveRowCol}>
+              <Text style={styles.proactiveLabel}>免打扰时段（此区间不主动问候）</Text>
+              <View style={styles.quietRow}>
+                <HourStepper label="从" value={proactive.quietStartHour} onChange={(v) => updateProactive({ quietStartHour: v })} />
+                <HourStepper label="到" value={proactive.quietEndHour} onChange={(v) => updateProactive({ quietEndHour: v })} />
+              </View>
+            </View>
+          </View>
+        )}
+      </View>
 
       <View style={styles.menuList}>
         {menuItems.map((item) => (
@@ -657,6 +726,26 @@ const styles = StyleSheet.create({
     color: COLORS.danger,
     fontWeight: '600',
   },
+  // AI 主动问候设置
+  proactiveCard: { marginHorizontal: 16, backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 16, shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  proactiveHeader: { flexDirection: 'row', alignItems: 'center' },
+  proactiveTitle: { flex: 1, fontSize: 16, fontWeight: '700', color: COLORS.text, marginLeft: 10 },
+  proactiveDesc: { fontSize: 12.5, color: COLORS.textLight, marginTop: 10, lineHeight: 18 },
+  proactiveBody: { marginTop: 14, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 14, gap: 14 },
+  proactiveRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  proactiveRowCol: { gap: 8 },
+  proactiveLabel: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
+  seg: { flexDirection: 'row', backgroundColor: COLORS.background, borderRadius: 10, padding: 3, gap: 3 },
+  segBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  segBtnActive: { backgroundColor: COLORS.primary },
+  segText: { fontSize: 13, color: COLORS.textLight, fontWeight: '500' },
+  segTextActive: { color: '#fff', fontWeight: '700' },
+  quietRow: { flexDirection: 'row', gap: 24 },
+  hourStepperRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  hourStepperLabel: { fontSize: 13, color: COLORS.textLight, width: 16 },
+  hourStepperCtl: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background, borderRadius: 10, padding: 4, gap: 10 },
+  hourStepBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.secondary, alignItems: 'center', justifyContent: 'center' },
+  hourStepVal: { fontSize: 14, color: COLORS.text, fontWeight: '700', minWidth: 44, textAlign: 'center' },
 });
 
 export default SettingsPage;
