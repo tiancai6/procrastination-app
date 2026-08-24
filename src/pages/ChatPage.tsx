@@ -509,7 +509,11 @@ const ChatPage: React.FC = () => {
               ? () => (
                   <View style={[styles.row, styles.rowBot]}>
                     <View style={[styles.bubble, styles.bubbleBot]}>
-                      <Text style={[styles.bubbleText, styles.bubbleTextBot]}>{streamingText}</Text>
+                      {renderFormattedText(
+                        streamingText,
+                        [styles.bubbleText, styles.bubbleTextBot],
+                        [styles.bubbleText, styles.bubbleTextBot, styles.bubbleTextBold],
+                      )}
                     </View>
                   </View>
                 )
@@ -812,6 +816,39 @@ const ChatPage: React.FC = () => {
   );
 };
 
+// 简单格式化渲染：把 <br> 转成换行，把 **粗体** 解析为加粗文本
+const renderFormattedText = (content: string, baseStyle: any, boldStyle: any): React.ReactNode => {
+  if (!content) return null;
+  const normalized = content
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/br>/gi, '\n');
+  const lines = normalized.split('\n');
+  return (
+    <Text style={baseStyle}>
+      {lines.map((line, lineIdx) => {
+        // 按 **text** 拆分成普通段和加粗段
+        const parts = line.split(/(\*\*[^*]+\*\*)/g);
+        return (
+          <Text key={lineIdx}>
+            {parts.map((part, partIdx) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                const text = part.slice(2, -2);
+                return (
+                  <Text key={partIdx} style={boldStyle}>
+                    {text}
+                  </Text>
+                );
+              }
+              return <Text key={partIdx}>{part}</Text>;
+            })}
+            {lineIdx < lines.length - 1 ? '\n' : null}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+};
+
 // 单条消息气泡
 const ChatRow = memo(
   ({
@@ -839,8 +876,10 @@ const ChatRow = memo(
           ))}
         </View>
       ) : null;
-    const textBlock = item.content ? (
-      <Text style={[styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot]}>{item.content}</Text>
+    const textBlock = item.content ? renderFormattedText(
+      item.content,
+      [styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot],
+      [styles.bubbleText, isUser ? styles.bubbleTextUser : styles.bubbleTextBot, styles.bubbleTextBold],
     ) : null;
     const timeBlock = (
       <Text style={[styles.timeText, isUser && styles.timeTextUser]}>
@@ -965,6 +1004,7 @@ const styles = StyleSheet.create({
   visionHint: { fontSize: 11.5, color: COLORS.primary, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 2 },
   bubbleTextUser: { color: '#fff' },
   bubbleTextBot: { color: COLORS.text },
+  bubbleTextBold: { fontWeight: '700' },
   timeText: { fontSize: 10, color: COLORS.textLighter, marginTop: 4, textAlign: 'right' },
   timeTextUser: { color: 'rgba(255,255,255,0.75)' },
   rowActions: { flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
