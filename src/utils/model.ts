@@ -218,18 +218,78 @@ const toResponsesBody = (payload: ChatPayload) => {
   return { instructions, input };
 };
 
-// 从 Responses API 响应里取模型最终文本（兼容 output_text 便捷字段与 output[].content 结构）
+// 递归收集节点里「像正文」的文本（只认常见文本字段，避免把 id/name 之类杂项拼进来）
+const collectTexts = (node: any, out: string[]): void => {
+  if (!node) return;
+  if (typeof node === 'string') {
+    if (node.trim()) out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((n) => collectTexts(n, out));
+    return;
+  }
+  if (typeof node === 'object') {
+    for (const key of ['text', 'output_text', 'answer', 'result']) {
+      const v = (node as any)[key];
+      if (typeof v === 'string' && v.trim()) {
+        out.push(v);
+        return;
+      }
+    }
+    if (Array.isArray((node as any).content)) collectTexts((node as any).content, out);
+  }
+};
+
+// 从 Responses API 响应里取模型最终文本。
+// 火山方舟 Responses 的返回结构会随版本演进（output_text / output[].content / 新增工具调用项…），
+// 这里按「从最规范到最宽松」逐级兜底：只要响应里带了正文就尽量取出来，避免接口改版后直接解析失败。
 const extractResponsesText = (data: any): string | undefined => {
+  // 1) 便捷字段
   if (typeof data?.output_text === 'string' && data.output_text) return data.output_text;
+  // 2) 标准结构：output[] 里 type==='message' 的 content（output_text / text / 纯字符串都认）
   const msg = (data?.output || []).find((o: any) => o?.type === 'message');
   if (msg?.content) {
-    const txt = msg.content
-      .filter((c: any) => c?.type === 'output_text' && c?.text)
-      .map((c: any) => c.text)
+    const arr = Array.isArray(msg.content) ? msg.content : [msg.content];
+    const txt = arr
+      .map((c: any) => (typeof c === 'string' ? c : c?.text))
+      .filter((s: any) => typeof s === 'string' && s.trim())
       .join('');
     if (txt) return txt;
   }
-  return undefined;
+  // 3) 网关偶尔回落到 Chat Completions 结构
+  const chat = data?.choices?.[0]?.message?.content ?? data?.message?.content;
+  if (typeof chat === 'string' && chat.trim()) return chat;
+  // 4) 最后兜底：output 里排除「思考过程 / 工具调用」项后，收集剩余项的文本
+  const out: string[] = [];
+  for (const item of data?.output || []) {
+    const t = String(item?.type || '');
+    if (/reasoning|thought|tool|search|call/i.test(t)) continue;
+    collectTexts(item, out);
+  }
+  const joined = out.join('');
+  return joined || undefined;
+};
+
+// 解析失败时描述响应的实际结构（顶层字段 + output 各项 type + content 各项 type），
+// 写进「AI 用量记录 → 调试·原始返回」，一眼就能看出接口是不是改版了。
+const describeResponsesShape = (data: any): string => {
+  try {
+    const top = Object.keys(data || {}).join(',');
+    const items = Array.isArray(data?.output)
+      ? (data.output as any[])
+          .map((o, i) => {
+            const cts = Array.isArray(o?.content)
+              ? (o.content as any[]).map((c) => c?.type).join('|')
+              : typeof o?.content;
+            return `#${i}:${o?.type}(content:${cts})`;
+          })
+          .join(' ')
+      : `output=${typeof data?.output}`;
+    return `[Responses结构] 顶层字段=${top}；output=[${items}]；status=${data?.status || '-'}`;
+  } catch {
+    return '[Responses结构] 无法描述';
+  }
 };
 
 export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts = {}): Promise<string> => {
@@ -303,9 +363,10 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
       await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, content).catch(() => {});
       return content;
     }
-    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${rawStr}`).catch(() => {});
-    console.error('[model] ⚠️ Responses API 返回为空但 HTTP 成功！完整响应:', rawStr.slice(0, 1500));
-    throw new Error('模型返回为空');
+    const shape = describeResponsesShape(data);
+    await recordAiRaw(opts.feature || 'AI调用', cfg.modelId, `[CONTENT_EMPTY] ${shape}\n${rawStr}`).catch(() => {});
+    console.error('[model] ⚠️ Responses API 返回为空但 HTTP 成功！结构:', shape, '完整响应:', rawStr.slice(0, 1500));
+    throw new Error(`模型返回为空。${shape}（详见「我的 → AI 用量记录 → 调试·原始返回」）`);
   }
   throw new Error(lastEmpty);
 };
