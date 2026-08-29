@@ -12,7 +12,34 @@ export interface CallOpts {
   forceSearch?: boolean; // 即便模型未勾选「联网搜索」，本轮也强制联网
   feature?: string; // 调用来源标签（三餐估算/运动消耗/AI对话…），用于用量记录
   jsonMode?: boolean; // 要求 API 以 json_object 模式返回，强制合法 JSON，降低「模型不按格式返回」导致解析失败的概率
+  timeoutMs?: number; // 请求超时（毫秒），不传用 DEFAULT_TIMEOUT_MS
 }
+
+// 请求超时兜底。没有超时的话，一旦服务端收到请求却不响应（网络半开、接口不支持、模型卡住），
+// fetch 会一直挂着 → 界面无限转圈、既不返回也不报错。这里统一由 AbortController 兜底。
+export const DEFAULT_TIMEOUT_MS = 60_000;
+// 营养估算要走联网搜索 + 输出很长，给更宽松的超时（豆包 Responses 通道尤其慢）
+export const NUTRITION_TIMEOUT_MS = 120_000;
+
+// 带超时的 fetch：超时后主动 abort，并抛出可操作的错误说明，避免 UI 无限等待。
+const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs: number): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      const sec = Math.round(timeoutMs / 1000);
+      throw new Error(
+        `请求超时（超过 ${sec} 秒未返回结果）。服务端已收到请求但迟迟没有响应，常见原因：①当前网络到该模型接口不稳定或被拦截；②火山方舟接入点未开通 Responses API / 联网搜索能力；③模型负载高或输出过长。建议：稍后重试，或到「我的 → 管理 AI 模型」关掉该模型的「联网搜索」开关后再估算（会改走普通接口）。`,
+      );
+    }
+    // 网络层错误（DNS 失败、连接被重置等）也补一句人话，避免只看到「Network request failed」
+    throw new Error(`网络请求失败：${e?.message || '未知错误'}。请检查网络连接，或更换网络环境后重试。`);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 export type ChatPayload = { role: string; content: string | ContentPart[] }[];
@@ -105,15 +132,19 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
   for (let attempt = 0; attempt <= 2; attempt++) {
-    const res = await fetch(cfg.baseUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
+    const res = await fetchWithTimeout(
+      cfg.baseUrl,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput }, false)),
       },
-      body: JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput }, false)),
-    });
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    );
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[model] request failed', cfg.brand, res.status, errText);
@@ -226,15 +257,19 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     // JSON 模式（火山 Responses API 同样兼容 response_format）。与 web_search 工具冲突时跳过，避免 400。
     if (opts.jsonMode && !body.tools) body.response_format = { type: 'json_object' };
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    );
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[model] responses request failed', cfg.brand, res.status, errText);

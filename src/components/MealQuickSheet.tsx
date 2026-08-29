@@ -377,9 +377,16 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstimatingAll(true);
     setEstMsg('');
     const ctx = await buildMealContext(dateStr);
-    const { entries: next, failedMeals } = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
+    const { entries: next, failedMeals, message } = await estimateDayMeals(entries, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
     const dayList = next.filter((m) => m.date === dateStr);
-    setEstMsg(failedMeals.length > 0 ? `有 ${failedMeals.length} 餐没估上（限流/网络），可再点一次重试` : '');
+    // 失败时优先展示具体原因（超时/模型标识错误/限流…），没有详细原因才退回笼统提示
+    setEstMsg(
+      failedMeals.length > 0
+        ? message
+          ? `${failedMeals.length} 餐没估上：${String(message).slice(0, 200)}`
+          : `有 ${failedMeals.length} 餐没估上（限流/网络），可再点一次重试`
+        : '',
+    );
     setEntries(dayList);
     // 全部估算完，把有结果的餐都展开明细
     setExpanded((e) => {
@@ -408,9 +415,11 @@ const MealQuickSheet: React.FC<Props> = ({ visible, date, onClose, onSaved }) =>
     setEstProgress(`估算中 0/${pending.length}`);
     try {
       const ctx = await buildMealContext(dateStr);
-      const { entries: next, failedMeals } = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
+      const { entries: next, failedMeals, message } = await estimateDayMeals(pending, (done, total) => setEstProgress(`估算中 ${done}/${total}`), ctx, selCfg);
       setEntries(next.filter((m) => m.date === dateStr));
-      if (failedMeals.length > 0) setEstMsg(`有 ${failedMeals.length} 餐没估上（限流/网络），可再点一次重试`);
+      if (failedMeals.length > 0) {
+        setEstMsg(message ? `${failedMeals.length} 餐没估上：${String(message).slice(0, 200)}` : `有 ${failedMeals.length} 餐没估上（限流/网络），可再点一次重试`);
+      }
       onSaved?.();
     } catch (e) {
       console.error('[MealQuickSheet] resume estimation failed', e);

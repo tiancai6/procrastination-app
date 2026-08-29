@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getActiveConfig } from './modelConfig';
-import { postChat, postChatResponses, parseJsonContent } from './model';
+import { postChat, postChatResponses, parseJsonContent, NUTRITION_TIMEOUT_MS } from './model';
 import { ModelConfig } from './modelConfig';
 import { autoBackup } from './autoBackup';
 import { MealEntry, MealType, MealNutrition, MealNutritionItem, MealAdequacy, KnownFood } from '../types';
@@ -451,6 +451,16 @@ const localNutrition = (known: KnownFood[]): MealNutrition => {
 // 大部分情况能自己恢复，避免你看到冷冰冰的「估算失败」。
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// 给超时错误补一句「本次走的哪条通道」，方便定位是火山 Responses（联网）还是普通接口卡住。
+const withChannelHint = (e: any, viaResponses: boolean): string => {
+  const raw = e?.message ? String(e.message) : '';
+  if (!raw) return '未知错误';
+  if (!raw.includes('请求超时')) return raw;
+  return viaResponses
+    ? raw + '\n（本次走火山 Responses 联网通道：若接入点未开通 Responses API / 联网搜索能力就会一直卡住。可到「我的 → 管理 AI 模型」关掉该模型的「联网搜索」开关，改走普通接口重试。）'
+    : raw + '\n（本次走普通 Chat Completions 通道）';
+};
+
 export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext, cfgOverride?: ModelConfig): Promise<EstimateResult> => {
   const cfg = cfgOverride || (await getActiveConfig(false));
   if (!cfg) return { result: null, status: 'nokey' };
@@ -512,8 +522,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: true, jsonMode: true, feature: '三餐估算' })
-        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算' });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: true, jsonMode: true, feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
@@ -546,7 +556,7 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
         continue;
       }
       console.error('[Nutrition] GLM call failed', e);
-      return { result: null, status: isRate ? 'rate' : 'error', message: e?.message, searched: false, needSearch };
+      return { result: null, status: isRate ? 'rate' : 'error', message: withChannelHint(e, useResponses), searched: false, needSearch };
     }
   }
   return { result: null, status: 'error', searched: false, needSearch };
@@ -773,8 +783,8 @@ const requestMealBatch = async (
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: true, jsonMode: true, feature: '三餐估算(批量)' })
-        : await postChat(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: needSearch, jsonMode: true, feature: '三餐估算(批量)' });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: true, jsonMode: true, feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: needSearch, jsonMode: true, feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS });
       const raw = parseJsonContent(content);
       const results = extractBatchMeals(raw, chunk, idxToEntry);
       if (results.size === 0) {
@@ -792,7 +802,7 @@ const requestMealBatch = async (
         await sleep(wait);
         continue;
       }
-      return { results: new Map(), status: isRate ? 'rate' : 'error', message: e?.message };
+      return { results: new Map(), status: isRate ? 'rate' : 'error', message: withChannelHint(e, useResponses) };
     }
   }
   return { results: new Map(), status: 'error' };
