@@ -522,8 +522,8 @@ export const estimateMealNutrition = async (entry: MealEntry, ctx?: MealContext,
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: true, jsonMode: true, feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS })
-        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: needSearch, jsonMode: true, feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: true, jsonMode: true, thinking: 'disabled', feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens: 4000, forceSearch: needSearch, jsonMode: true, thinking: 'disabled', feature: '三餐估算', timeoutMs: NUTRITION_TIMEOUT_MS });
 
       const parsed = normalizeNutrition(parseJsonContent(content));
       // 🔧 空结果保护：模型返回了能解析的 JSON，但营养全为 0 且没有任何明细项。
@@ -770,8 +770,9 @@ const requestMealBatch = async (
   const outro = `\n\n请返回一个 JSON 对象，结构为 {"results": [...]}，其中 results 数组的每个元素按顺序对应上面【1】~【${chunk.length}】的每一餐（第 1 个元素对应【1】，第 2 个对应【2】…）。不要额外输出任何文字，也不要返回裸数组。`;
   const userContent = intro + '\n\n' + sections.join('\n\n') + outro;
 
-  // 输出预算：推理模型（如 doubao-seed-evolving / 2-0-mini）会先把大量 token 花在"思考"上，预算必须够大，
-  // 否则被截断（status=incomplete/length）导致正文为空。每餐 1500 + 基础 800，下限 8000（日常三餐一次成功不重试），上限 20000。
+  // 输出预算：已显式关闭深度思考（thinking: 'disabled'），模型不再把额度耗在思维链上、直接吐 JSON。
+  // 这里仍给较宽松预算作安全余量：每餐 1500 + 基础 800，下限 8000、上限 20000；
+  // 万一 JSON 较长被截断（status=incomplete/length），postChatResponses 会自动翻倍 max_output_tokens 重试。
   const maxTokens = Math.min(20000, Math.max(8000, chunk.length * 1500 + 800));
   const useResponses = cfg.brand === 'doubao' && needSearch;
   const messages = [
@@ -783,8 +784,8 @@ const requestMealBatch = async (
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const content = useResponses
-        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: true, jsonMode: true, feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS })
-        : await postChat(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: needSearch, jsonMode: true, feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS });
+        ? await postChatResponses(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: true, jsonMode: true, thinking: 'disabled', feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS })
+        : await postChat(cfg, messages, { temperature: 0.2, maxTokens, forceSearch: needSearch, jsonMode: true, thinking: 'disabled', feature: '三餐估算(批量)', timeoutMs: NUTRITION_TIMEOUT_MS });
       const raw = parseJsonContent(content);
       const results = extractBatchMeals(raw, chunk, idxToEntry);
       if (results.size === 0) {

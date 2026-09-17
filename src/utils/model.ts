@@ -13,6 +13,11 @@ export interface CallOpts {
   feature?: string; // 调用来源标签（三餐估算/运动消耗/AI对话…），用于用量记录
   jsonMode?: boolean; // 要求 API 以 json_object 模式返回，强制合法 JSON，降低「模型不按格式返回」导致解析失败的概率
   timeoutMs?: number; // 请求超时（毫秒），不传用 DEFAULT_TIMEOUT_MS
+  // 深度思考开关（豆包 Seed 系列等推理模型支持，火山官方参数：thinking={type}）。
+  // 推理模型默认把大量输出额度耗在思维链上，导致正文被截断（incomplete_details.reason='length'）：
+  // output 里只有 reasoning（思考过程）、拿不到 message（答案），且每轮要等很久 → 界面一直转圈。
+  // 结构化任务（营养估算等）应显式传 'disabled'，让模型直接给答案。
+  thinking?: 'disabled' | 'enabled' | 'auto';
 }
 
 // 请求超时兜底。没有超时的话，一旦服务端收到请求却不响应（网络半开、接口不支持、模型卡住），
@@ -113,6 +118,8 @@ const buildBody = (cfg: ModelConfig, payload: ChatPayload, opts: CallOpts, strea
   // JSON 模式：让 API 强制返回合法 JSON 对象，降低「模型不按格式返回」导致解析失败的概率。
   // 注意：OpenAI 兼容接口禁止 json_object 与 tools 同时出现，故仅在无 tools 时附加，避免 400。
   if (opts.jsonMode && !tools) body.response_format = { type: 'json_object' };
+  // 深度思考开关（火山专属参数）。推理模型不关思考会把输出额度烧在思维链上，正文被截断拿不到答案。
+  if (opts.thinking && cfg.brand === 'doubao') body.thinking = { type: opts.thinking };
   return body;
 };
 
@@ -131,6 +138,9 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
   // 配合下方「截断自动翻倍重试」，长回答也能一轮拿到完整正文。
   const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
+  // 部分接入点不认 thinking 字段，遇到 400 会自动去掉重发一次（thinkingDropped 保证只降级一次）
+  let thinkingMode = opts.thinking;
+  let thinkingDropped = false;
   for (let attempt = 0; attempt <= 2; attempt++) {
     const res = await fetchWithTimeout(
       cfg.baseUrl,
@@ -141,13 +151,21 @@ export const postChat = async (cfg: ModelConfig, payload: ChatPayload, opts: Cal
           Accept: 'application/json',
           Authorization: `Bearer ${cfg.apiKey}`,
         },
-        body: JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput }, false)),
+        body: JSON.stringify(buildBody(cfg, payload, { ...opts, maxTokens: maxOutput, thinking: thinkingMode }, false)),
       },
       opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     );
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[model] request failed', cfg.brand, res.status, errText);
+      // 接入点不支持 thinking 参数 → 去掉后同一次尝试内重发，不因此让整个调用失败
+      if (res.status === 400 && thinkingMode && !thinkingDropped) {
+        console.warn('[model] 接入点不接受 thinking 参数，去掉后重试:', thinkingMode);
+        thinkingDropped = true;
+        thinkingMode = undefined;
+        attempt -= 1;
+        continue;
+      }
       let msg = `${BRAND_PRESETS[cfg.brand].label} 请求失败（${res.status}）`;
       if (res.status === 400) {
         msg += '：请求被服务器拒绝（400）。常见原因：①开启了「联网搜索」但当前品牌在 Chat Completions 端点不支持该工具（豆包暂不支持，请到「管理 AI 模型」关掉该模型的联网搜索开关）；②模型标识/接口填错。';
@@ -302,6 +320,9 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
   // GLM 免费模型 max_tokens 上限仅 1024，翻倍会 400，故按品牌设上限；其余品牌给到 32000，长回答也能一轮拿全。
   const MAX_OUTPUT_CAP = cfg.brand === 'glm' ? 1024 : 32000;
   let lastEmpty = '模型返回为空';
+  // 部分接入点不认 thinking 字段，遇到 400 会自动去掉重发一次（thinkingDropped 保证只降级一次）
+  let thinkingMode = opts.thinking;
+  let thinkingDropped = false;
   for (let attempt = 0; attempt <= 2; attempt++) {
     const hasImage = payloadHasImage(payload);
     const body: any = {
@@ -316,6 +337,8 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     if (instructions) body.instructions = instructions;
     // JSON 模式（火山 Responses API 同样兼容 response_format）。与 web_search 工具冲突时跳过，避免 400。
     if (opts.jsonMode && !body.tools) body.response_format = { type: 'json_object' };
+    // 深度思考开关（火山专属参数）。推理模型不关思考会把输出额度烧在思维链上，正文被截断拿不到答案。
+    if (thinkingMode && cfg.brand === 'doubao') body.thinking = { type: thinkingMode };
 
     const res = await fetchWithTimeout(
       url,
@@ -333,6 +356,14 @@ export const postChatResponses = async (cfg: ModelConfig, payload: ChatPayload, 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error('[model] responses request failed', cfg.brand, res.status, errText);
+      // 接入点不支持 thinking 参数 → 去掉后同一次尝试内重发，不因此让整个调用失败
+      if (res.status === 400 && thinkingMode && !thinkingDropped) {
+        console.warn('[model] Responses 接入点不接受 thinking 参数，去掉后重试:', thinkingMode);
+        thinkingDropped = true;
+        thinkingMode = undefined;
+        attempt -= 1;
+        continue;
+      }
       let msg = `${BRAND_PRESETS[cfg.brand].label} 模型请求失败（${res.status}）`;
       if (res.status === 400) {
         msg += '：请求被拒绝（400）。常见原因：模型标识不是 ep-xxxx 接入点格式、接入点未开启对应能力、图片格式/base64 无效，或参数不受该接入点支持。';
@@ -402,6 +433,8 @@ export const postChatStreamResponses = (
           max_output_tokens: maxOutput,
         };
         if (instructions) body.instructions = instructions;
+        // 深度思考开关（火山专属参数），仅在调用方显式传入时生效；默认不传则保持模型自身配置
+        if (opts.thinking && cfg.brand === 'doubao') body.thinking = { type: opts.thinking };
 
         const result: { full: string; truncated: boolean; lastRaw?: any } = await new Promise((res, rej) => {
           const xhr = new XMLHttpRequest();
