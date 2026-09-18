@@ -52,6 +52,10 @@ export const getChatMaxTokens = (brand: string): number => {
   return b === 'glm' ? 1024 : 12000;
 };
 
+// 对话压缩 / 档案整理属于「把一大段旧内容喂给模型、再生成较长摘要」的重任务，
+// 默认 60s 不够（长对话会触发「请求超时（超过60秒未返回结果）」）。给它更宽松的超时。
+export const COMPRESS_TIMEOUT_MS = 180_000;
+
 // ============ 聊天图片的存储与读取 ============
 const CHAT_IMG_DIR = `${FileSystem.documentDirectory}chat_images/`;
 
@@ -195,7 +199,7 @@ export const compressChat = async (
       { role: 'system', content: COMPRESS_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },
     ],
-    { temperature: 0.3, maxTokens: 4096, feature: '对话压缩' },
+    { temperature: 0.3, maxTokens: getChatMaxTokens(cfg.brand), thinking: 'disabled', timeoutMs: COMPRESS_TIMEOUT_MS, feature: '对话压缩' },
   );
 };
 
@@ -219,7 +223,7 @@ export const rebuildSummary = async (md: string): Promise<string> => {
       { role: 'system', content: REBUILD_SYSTEM_PROMPT(today) },
       { role: 'user', content: md },
     ],
-    { temperature: 0.3, maxTokens: 4096, feature: '档案整理' },
+    { temperature: 0.3, maxTokens: getChatMaxTokens(cfg.brand), thinking: 'disabled', timeoutMs: COMPRESS_TIMEOUT_MS, feature: '档案整理' },
   );
 };
 
