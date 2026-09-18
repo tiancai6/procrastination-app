@@ -54,7 +54,7 @@ export const getChatMaxTokens = (brand: string): number => {
 
 // 对话压缩 / 档案整理属于「把一大段旧内容喂给模型、再生成较长摘要」的重任务，
 // 默认 60s 不够（长对话会触发「请求超时（超过60秒未返回结果）」）。给它更宽松的超时。
-export const COMPRESS_TIMEOUT_MS = 180_000;
+export const COMPRESS_TIMEOUT_MS = 600_000;
 
 // ============ 聊天图片的存储与读取 ============
 const CHAT_IMG_DIR = `${FileSystem.documentDirectory}chat_images/`;
