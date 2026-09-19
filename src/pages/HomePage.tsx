@@ -105,6 +105,8 @@ const HomePage: React.FC = () => {
   const [exSlot, setExSlot] = useState<ExerciseRecord['timeOfDay'] | ''>('');
   const [exPlan, setExPlan] = useState('');
   const [exNote, setExNote] = useState('');
+  const [editingExId, setEditingExId] = useState<string | null>(null);
+  const [estimatingExAll, setEstimatingExAll] = useState(false);
 
   const loadMeals = async () => {
     const t = toDateStr(new Date());
@@ -196,6 +198,7 @@ const HomePage: React.FC = () => {
 
   const openExModal = async () => {
     const defType = exTypes[0] || '其他';
+    setEditingExId(null);
     setExType(defType);
     setExDuration('30');
     setExCustom('');
@@ -206,6 +209,55 @@ const HomePage: React.FC = () => {
     const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
     setExKcal(String(estimateExerciseKcalOffline(defType, 30, p.weight)));
     setExModal(true);
+  };
+
+  // 点已加入的运动 → 直接带出原数据进入修改
+  const openExEdit = (rec: ExerciseRecord) => {
+    const known = exTypes.includes(rec.type);
+    setEditingExId(rec.id);
+    setExType(known ? rec.type : '其他');
+    setExCustom(known ? '' : rec.type);
+    setExDuration(String(rec.durationMin || 30));
+    setExKcal(rec.kcal != null ? String(rec.kcal) : '');
+    setExSlot(rec.timeOfDay || '');
+    setExPlan(rec.plan || '');
+    setExNote(rec.note || '');
+    setExTypeManager(false);
+    setExModal(true);
+  };
+
+  // 一键估算今日运动消耗：按保守(低侧)MET 离线算，即时、免费、天然偏低。
+  // 优先补「未估算」的条目；若都已有值，则按保守值重新估算一遍。
+  const handleEstimateExercise = async () => {
+    const list = activity.exercises;
+    if (list.length === 0) {
+      Alert.alert('还没有运动记录', '先点「加运动记录」写下今天练了什么吧。');
+      return;
+    }
+    const missing = list.filter((e) => !e.kcal);
+    const ids = new Set((missing.length ? missing : list).map((e) => e.id));
+    setEstimatingExAll(true);
+    try {
+      const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
+      const t = toDateStr(new Date());
+      const patched = list.map((e) =>
+        ids.has(e.id)
+          ? { ...e, kcal: estimateExerciseKcalOffline(e.type, e.durationMin || 30, p.weight) }
+          : e,
+      );
+      const next: DailyActivity = { ...activity, exercises: patched };
+      setActivity(next);
+      await setDailyActivity(t, next);
+      setDayEnergy(await calcDayEnergy(t));
+      Alert.alert(
+        '估算完成',
+        missing.length
+          ? `已为 ${missing.length} 条未估算的运动补上保守消耗值（共 ${list.length} 条）。`
+          : `已按保守值重新估算全部 ${list.length} 条运动消耗。`,
+      );
+    } finally {
+      setEstimatingExAll(false);
+    }
   };
 
   const estimateEx = async () => {
@@ -234,7 +286,7 @@ const HomePage: React.FC = () => {
     const t = toDateStr(new Date());
     const finalType = exType === '其他' ? (exCustom.trim() || '其他') : exType;
     const rec: ExerciseRecord = {
-      id: generateId(),
+      id: editingExId || generateId(),
       type: finalType,
       durationMin: d,
       kcal: exKcal ? parseInt(exKcal, 10) : undefined,
@@ -242,10 +294,42 @@ const HomePage: React.FC = () => {
       plan: exPlan.trim() || undefined,
       note: exNote.trim() || undefined,
     };
-    const next = await saveExerciseRecord(t, activity, rec);
+    let next: DailyActivity;
+    if (editingExId) {
+      // 修改：按 id 替换原记录
+      next = { ...activity, exercises: activity.exercises.map((e) => (e.id === editingExId ? rec : e)) };
+      await setDailyActivity(t, next);
+    } else {
+      next = await saveExerciseRecord(t, activity, rec);
+    }
     setActivity(next);
     setDayEnergy(await calcDayEnergy(t));
+    setEditingExId(null);
     setExModal(false);
+  };
+
+  const deleteEx = () => {
+    if (!editingExId) return;
+    const targetId = editingExId;
+    Alert.alert('删除这条运动记录？', '删除后无法恢复。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          const t = toDateStr(new Date());
+          const next: DailyActivity = {
+            ...activity,
+            exercises: activity.exercises.filter((e) => e.id !== targetId),
+          };
+          setActivity(next);
+          await setDailyActivity(t, next);
+          setDayEnergy(await calcDayEnergy(t));
+          setEditingExId(null);
+          setExModal(false);
+        },
+      },
+    ]);
   };
 
   const openBodyModal = async () => {
@@ -612,13 +696,22 @@ const HomePage: React.FC = () => {
         {activity.exercises.length > 0 && (
           <View style={styles.exList}>
             {activity.exercises.map((e) => (
-              <View key={e.id} style={styles.exRow}>
+              <TouchableOpacity
+                key={e.id}
+                style={styles.exRow}
+                onPress={() => openExEdit(e)}
+                activeOpacity={0.6}
+              >
                 <Text style={styles.exName}>
                   {e.type} {e.durationMin} 分钟
                 </Text>
-                <Text style={styles.exKcal}>{e.kcal ? `${e.kcal} kcal` : '未估算'}</Text>
-              </View>
+                <View style={styles.exRowRight}>
+                  <Text style={styles.exKcal}>{e.kcal ? `${e.kcal} kcal` : '未估算'}</Text>
+                  <Ionicons name="create-outline" size={14} color="#94A3B8" />
+                </View>
+              </TouchableOpacity>
             ))}
+            <Text style={styles.exEditHint}>点任意一条可直接修改</Text>
           </View>
         )}
 
@@ -646,16 +739,16 @@ const HomePage: React.FC = () => {
             <Text style={styles.actBtnText}>修改模型</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.actBtn, styles.actBtnPurple, estimating && styles.mealEstimateDisabled]}
-            onPress={handleEstimateMeal}
-            disabled={estimating}
+            style={[styles.actBtn, styles.actBtnPurple, estimatingExAll && styles.mealEstimateDisabled]}
+            onPress={handleEstimateExercise}
+            disabled={estimatingExAll}
           >
-            {estimating ? (
+            {estimatingExAll ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Ionicons name="sparkles-outline" size={15} color="#fff" />
+              <Ionicons name="speedometer-outline" size={15} color="#fff" />
             )}
-            <Text style={styles.actBtnText}>AI 估算今日营养</Text>
+            <Text style={styles.actBtnText}>估算运动消耗</Text>
           </TouchableOpacity>
         </View>
 
@@ -775,12 +868,12 @@ const HomePage: React.FC = () => {
       </Modal>
 
       {/* 加运动记录 Modal（与运动日历页表单一致） */}
-      <Modal visible={exModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setExModal(false); }}>
-        <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setExModal(false); }}>
+      <Modal visible={exModal} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); setExModal(false); setEditingExId(null); }}>
+        <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setExModal(false); setEditingExId(null); }}>
           <View style={styles.sheetWrap}>
             <KeyboardAvoidingView behavior="padding" style={styles.sheet}>
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                <Text style={styles.sheetTitle}>添加运动</Text>
+                <Text style={styles.sheetTitle}>{editingExId ? '修改运动' : '添加运动'}</Text>
                 <Text style={styles.sheetLabel}>类型</Text>
                 <View style={styles.exTypeRow}>
                   {exTypes.map((t) => (
@@ -913,9 +1006,19 @@ const HomePage: React.FC = () => {
                   blurOnSubmit
                 />
                 <TouchableOpacity style={styles.exAddSaveBtn} onPress={confirmEx}>
-                  <Ionicons name="add-circle-outline" size={16} color="#fff" />
-                  <Text style={styles.exAddSaveBtnText}>保存</Text>
+                  <Ionicons
+                    name={editingExId ? 'checkmark-circle-outline' : 'add-circle-outline'}
+                    size={16}
+                    color="#fff"
+                  />
+                  <Text style={styles.exAddSaveBtnText}>{editingExId ? '保存修改' : '保存'}</Text>
                 </TouchableOpacity>
+                {editingExId && (
+                  <TouchableOpacity style={styles.exDeleteBtn} onPress={deleteEx}>
+                    <Ionicons name="trash-outline" size={15} color="#EF4444" />
+                    <Text style={styles.exDeleteBtnText}>删除这条记录</Text>
+                  </TouchableOpacity>
+                )}
                 <View style={{ height: 20 }} />
               </ScrollView>
             </KeyboardAvoidingView>
@@ -1309,9 +1412,17 @@ const styles = StyleSheet.create({
   levelChipText: { fontSize: 12.5, color: '#1E40AF' },
   levelChipTextActive: { color: '#fff', fontWeight: '600' },
   exList: { marginTop: 10, gap: 6 },
-  exRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#fff', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
+  exRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', borderRadius: 8, paddingVertical: 9, paddingHorizontal: 10 },
+  exRowRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   exName: { fontSize: 13, color: COLORS.text },
   exKcal: { fontSize: 12.5, color: '#1D4ED8', fontWeight: '600' },
+  exEditHint: { fontSize: 11.5, color: '#64748B', marginTop: 2 },
+  exDeleteBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 10, paddingVertical: 11, borderRadius: 14,
+    backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
+  },
+  exDeleteBtnText: { color: '#EF4444', fontSize: 14, fontWeight: '600' },
   exAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
