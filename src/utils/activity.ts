@@ -143,7 +143,7 @@ export const estimateExerciseKcal = async (desc: string): Promise<number | null>
   const prompt = `请保守估计、尽量往低了估以下运动的能量消耗（千卡）。只返回一个整数（千卡），不要任何其它文字：\n${desc}`;
   try {
     const msg: ChatMessage = { id: 'ex', role: 'user', content: prompt, ts: Date.now() };
-    const text = await sendChat([msg], undefined, '运动消耗');
+    const text = await sendChat([msg], undefined, '运动消耗', { thinking: 'disabled' });
     const m = text.match(/\d+/);
     if (m) {
       const ai = parseInt(m[0], 10);

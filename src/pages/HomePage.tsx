@@ -240,11 +240,19 @@ const HomePage: React.FC = () => {
     try {
       const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
       const t = toDateStr(new Date());
-      const patched = list.map((e) =>
-        ids.has(e.id)
-          ? { ...e, kcal: estimateExerciseKcalOffline(e.type, e.durationMin || 30, p.weight) }
-          : e,
-      );
+      const patched: ExerciseRecord[] = [];
+      for (const e of list) {
+        if (!ids.has(e.id)) {
+          patched.push(e);
+          continue;
+        }
+        // 真正调用 AI 估算（estimateExerciseKcal 内部：AI + 失败回退离线保守值 + 取较小值，保证保守）
+        const dur = e.durationMin || 30;
+        const ai = await estimateExerciseKcal(`${e.type} ${dur}分钟`);
+        // 兜底：极端情况下 AI 也返回 null（如无 key 且离线兜底异常），用离线保守值保底
+        const kcal = ai ?? estimateExerciseKcalOffline(e.type, dur, p.weight);
+        patched.push({ ...e, kcal });
+      }
       const next: DailyActivity = { ...activity, exercises: patched };
       setActivity(next);
       await setDailyActivity(t, next);
@@ -252,8 +260,8 @@ const HomePage: React.FC = () => {
       Alert.alert(
         '估算完成',
         missing.length
-          ? `已为 ${missing.length} 条未估算的运动补上保守消耗值（共 ${list.length} 条）。`
-          : `已按保守值重新估算全部 ${list.length} 条运动消耗。`,
+          ? `已用 AI 保守估算 ${missing.length} 条未估算的运动消耗（共 ${list.length} 条）。`
+          : `已用 AI 重新保守估算全部 ${list.length} 条运动消耗。`,
       );
     } finally {
       setEstimatingExAll(false);
@@ -748,7 +756,7 @@ const HomePage: React.FC = () => {
             ) : (
               <Ionicons name="speedometer-outline" size={15} color="#fff" />
             )}
-            <Text style={styles.actBtnText}>估算运动消耗</Text>
+            <Text style={styles.actBtnText}>AI 估算运动消耗</Text>
           </TouchableOpacity>
         </View>
 

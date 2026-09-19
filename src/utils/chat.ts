@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { getActiveConfig, ModelConfig } from './modelConfig';
-import { postChat, postChatStream, postChatStreamResponses } from './model';
+import { postChat, postChatStream, postChatStreamResponses, CallOpts } from './model';
 
 export interface ChatMessage {
   id: string;
@@ -136,6 +136,7 @@ export const sendChat = async (
   messages: ChatMessage[],
   systemContext?: string,
   feature = 'AI对话',
+  opts?: Partial<CallOpts>,
 ): Promise<string> => {
   const hasImages = messages.some((m) => m.role === 'user' && m.images && m.images.length > 0);
   const cfg = await getActiveConfig(hasImages);
@@ -167,7 +168,7 @@ export const sendChat = async (
     }
   }
 
-  const content = await postChat(cfg, payload, { maxTokens: getChatMaxTokens(cfg.brand), feature });
+  const content = await postChat(cfg, payload, { maxTokens: getChatMaxTokens(cfg.brand), feature, ...opts });
   return content;
 };
 
