@@ -102,19 +102,58 @@ export const calcDayEnergy = async (date: string): Promise<DayEnergy> => {
   return { bmr, tdee, baseLevel: a.baseLevel, exerciseKcal };
 };
 
-// 用 AI 估算一段运动描述消耗多少千卡（返回整数 kcal 或 null）
+// 保守（低侧）MET 值：取各运动代谢当量（MET）的下限，确保消耗估算偏保守、不虚高。
+// MET 含义：每千克体重每小时消耗的千卡数。kcal = MET × 体重(kg) × 时长(小时)。
+const EXERCISE_MET_LOW: Record<string, number> = {
+  跑步: 7,
+  力量: 3.5,
+  游泳: 5,
+  骑行: 4,
+  瑜伽: 2.5,
+};
+const EXERCISE_MET_DEFAULT = 3; // 「其他」/未知类型：按轻度活动保守估算
+
+// 离线保守估算（不依赖 AI / 网络）：任何情况下都能给出偏低的消耗值。
+export const estimateExerciseKcalOffline = (
+  type: string,
+  durationMin: number,
+  weightKg: number,
+): number => {
+  const t = (type || '').trim();
+  // 精确匹配优先；否则看描述里是否包含已知类型（如「晨跑」命中「跑步」）
+  let met = EXERCISE_MET_LOW[t];
+  if (!met) {
+    const hit = Object.keys(EXERCISE_MET_LOW).find((k) => t.includes(k));
+    met = hit ? EXERCISE_MET_LOW[hit] : EXERCISE_MET_DEFAULT;
+  }
+  const h = Math.max(0, durationMin) / 60;
+  return Math.round(met * h * Math.max(1, weightKg));
+};
+
+// 用 AI 估算一段运动描述消耗多少千卡（返回整数 kcal，保守下限）。
+// 失败时回退到离线保守值，保证「总能估出来」且偏保守（用户常无法写清全部动作）。
 export const estimateExerciseKcal = async (desc: string): Promise<number | null> => {
+  const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
+  const durMatch = desc.match(/(\d+)\s*分钟/);
+  const dur = durMatch ? parseInt(durMatch[1], 10) : 30;
+  // 先算一份保守离线值，作为兜底与下限
+  const offline = estimateExerciseKcalOffline(desc, dur, p.weight);
   const apiKey = await getApiKey();
-  if (!apiKey) return null;
-  const prompt = `估算以下运动的大致能量消耗（千卡）。只返回一个整数（千卡），不要任何其它文字：\n${desc}`;
+  if (!apiKey) return offline; // 无 key 直接给保守离线值
+  const prompt = `请保守估计、尽量往低了估以下运动的能量消耗（千卡）。只返回一个整数（千卡），不要任何其它文字：\n${desc}`;
   try {
     const msg: ChatMessage = { id: 'ex', role: 'user', content: prompt, ts: Date.now() };
     const text = await sendChat([msg], undefined, '运动消耗');
     const m = text.match(/\d+/);
-    return m ? parseInt(m[0], 10) : null;
+    if (m) {
+      const ai = parseInt(m[0], 10);
+      // 取 AI 与离线保守值的较小值，确保消耗不虚高（描述不全时 AI 易偏高）
+      return Math.min(ai, offline > 0 ? offline : ai);
+    }
+    return offline;
   } catch (e) {
     console.error('[activity] estimateExerciseKcal failed', e);
-    return null;
+    return offline;
   }
 };
 

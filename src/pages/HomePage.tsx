@@ -34,6 +34,7 @@ import {
   removeExerciseType,
   DEFAULT_EXERCISE_TYPES,
   estimateExerciseKcal,
+  estimateExerciseKcalOffline,
   saveExerciseRecord,
   DEFAULT_BODY_PROFILE,
   DayEnergy,
@@ -193,14 +194,17 @@ const HomePage: React.FC = () => {
     setDayEnergy(await calcDayEnergy(t));
   };
 
-  const openExModal = () => {
-    setExType(exTypes[0] || '其他');
+  const openExModal = async () => {
+    const defType = exTypes[0] || '其他';
+    setExType(defType);
     setExDuration('30');
-    setExKcal('');
     setExCustom('');
     setExSlot('');
     setExPlan('');
     setExNote('');
+    // 打开即预填保守离线估算（偏低的消耗值），确保不依赖 AI 也能直接有数
+    const p = (await getBodyProfile()) || DEFAULT_BODY_PROFILE;
+    setExKcal(String(estimateExerciseKcalOffline(defType, 30, p.weight)));
     setExModal(true);
   };
 
@@ -862,10 +866,10 @@ const HomePage: React.FC = () => {
                   {estimatingEx ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Text style={styles.estimateBtnText}>AI 估算消耗</Text>
+                    <Text style={styles.estimateBtnText}>AI 估算（偏保守）</Text>
                   )}
                 </TouchableOpacity>
-                <Text style={styles.sheetLabel}>消耗（kcal，可留空或 AI 填）</Text>
+                <Text style={styles.sheetLabel}>消耗（kcal，已按保守值预填，可手动改或用下方 AI 复核）</Text>
                 <TextInput
                   style={styles.inputBox}
                   keyboardType="numeric"
